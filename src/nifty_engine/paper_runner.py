@@ -161,8 +161,6 @@ class PaperPersistence:
             for row in rows
             if row.get("index_weight") is not None and float(row["index_weight"]) > 0
         }
-        # Never blend a partial real-weight set with equal defaults. Either all configured
-        # constituents have weights or the live score remains explicitly equal-weighted.
         if len(positive_weights) == len(symbols):
             return positive_weights, heavyweights, "database"
         return {}, heavyweights, "equal"
@@ -312,7 +310,7 @@ class PaperPersistence:
         signal_id: str,
         signal: Signal,
         nifty_ltp: float,
-        level_price: float | None,
+        level_price: float | None = None,
     ) -> OpenPaperPosition:
         contract = signal.contract.contract
         if contract is None or signal.risk.quantity <= 0:
