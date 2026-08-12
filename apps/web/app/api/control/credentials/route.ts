@@ -2,6 +2,8 @@ import { encryptCredential } from "@/lib/credentialCrypto";
 import { isDashboardAuthorized } from "@/lib/dashboardAuth";
 import { serverSupabase } from "@/lib/serverSupabase";
 
+const MAX_CREDENTIAL_LENGTH = 16_384;
+
 export async function POST(request: Request) {
   if (!(await isDashboardAuthorized())) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -19,8 +21,8 @@ export async function POST(request: Request) {
   if (apiKey.length < 8 || apiSecret.length < 8) {
     return Response.json({ error: "API key and secret are required" }, { status: 400 });
   }
-  if (apiKey.length > 512 || apiSecret.length > 512) {
-    return Response.json({ error: "credential value is too long" }, { status: 400 });
+  if (apiKey.length > MAX_CREDENTIAL_LENGTH || apiSecret.length > MAX_CREDENTIAL_LENGTH) {
+    return Response.json({ error: "credential value exceeds the dashboard safety limit" }, { status: 400 });
   }
 
   const supabase = serverSupabase();
