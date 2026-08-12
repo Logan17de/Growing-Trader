@@ -77,6 +77,12 @@ export default function SignalDashboard() {
     try {
       const data = await jsonRequest<ControlStatus>("/api/control/status");
       setStatus(data);
+      setNotice((current) => {
+        const latest = data.latestCommand;
+        if (!latest || (latest.status !== "completed" && latest.status !== "failed")) return current;
+        const isQueueNotice = current.startsWith(`${latest.command} queued`) || current.startsWith(`${latest.command} is already`);
+        return isQueueNotice ? "" : current;
+      });
       setAuth("ready");
     } catch (error) {
       if (error instanceof Error && error.message === "unauthorized") {
