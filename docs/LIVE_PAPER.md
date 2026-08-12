@@ -75,7 +75,9 @@ The same migration adds `nifty_constituent_config`. Real index weights can be po
 
 This is intentionally called a synthetic NIFTY-50 constituent aggregate. It is not exchange-reported volume for the NIFTY index itself.
 
-The Vercel research view is available at `/strategy` and charts the latest observations while also displaying every DB-backed threshold.
+Migration `202608120006_nifty_volume_minute_view.sql` aggregates those scan rows into one minute buckets so `/strategy` can chart the full session without bloating the main control-plane heartbeat response.
+
+The Vercel research view is available at `/strategy` and displays the full-session aggregate chart plus every DB-backed threshold.
 
 ## Entry timing
 
@@ -105,7 +107,7 @@ The existing 1/3/5/10/15-minute outcome marks are retained whenever a position s
 
 ## Deploy
 
-Apply migrations in order through `202608120005_full_strategy_observability.sql`.
+Apply migrations in order through `202608120006_nifty_volume_minute_view.sql`.
 
 Then update Oracle:
 
