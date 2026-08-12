@@ -97,6 +97,20 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _returned_row(response: Any, operation: str) -> dict[str, Any]:
+    """Normalize Supabase insert responses without relying on `.single()` modifiers."""
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return dict(data)
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        return dict(data[0])
+    if isinstance(data, list) and not data:
+        raise RuntimeError(f"{operation} did not return an inserted row")
+    if isinstance(data, list):
+        raise RuntimeError(f"{operation} returned {len(data)} rows; expected exactly one")
+    raise RuntimeError(f"{operation} returned an unexpected Supabase response shape")
+
+
 class PaperPersistence:
     def __init__(self, client: Any, account_equity: float) -> None:
         self.client = client
@@ -197,10 +211,10 @@ class PaperPersistence:
                 }
             )
             .select("id")
-            .single()
             .execute()
         )
-        return str(response.data["id"])
+        row = _returned_row(response, "signal insert")
+        return str(row["id"])
 
     def create_paper_order(self, signal_id: str, signal: Signal, nifty_ltp: float) -> OpenPaperPosition:
         contract = signal.contract.contract
@@ -230,12 +244,12 @@ class PaperPersistence:
                 }
             )
             .select("id,created_at")
-            .single()
             .execute()
         )
-        opened_at = _parse_datetime(response.data.get("created_at")) or signal.timestamp
+        row = _returned_row(response, "paper order insert")
+        opened_at = _parse_datetime(row.get("created_at")) or signal.timestamp
         return OpenPaperPosition(
-            order_id=str(response.data["id"]),
+            order_id=str(row["id"]),
             signal_id=signal_id,
             trading_symbol=contract.trading_symbol,
             quantity=signal.risk.quantity,
