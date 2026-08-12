@@ -174,6 +174,18 @@ function Icon({ name, className = "" }: { name: IconName; className?: string }) 
   );
 }
 
+function BrandMark({ large = false }: { large?: boolean }) {
+  return <div className={`brand-mark${large ? " brand-mark-large" : ""}`} aria-hidden="true"><Icon name="activity" /></div>;
+}
+
+function StatusTrace({ tone }: { tone: "good" | "warn" | "bad" | "neutral" }) {
+  return (
+    <svg className={`status-trace ${tone}`} viewBox="0 0 180 42" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0 31 L14 28 L25 30 L38 19 L49 25 L62 22 L75 24 L88 13 L101 20 L114 15 L127 18 L141 8 L154 14 L168 10 L180 16" />
+    </svg>
+  );
+}
+
 function fmtTime(value?: string | null) {
   if (!value) return "—";
   const date = new Date(value);
@@ -350,7 +362,7 @@ export default function SignalDashboard() {
     return (
       <main className="center-shell">
         <div className="loading-panel" role="status" aria-live="polite">
-          <div className="brand-mark brand-mark-large" aria-hidden="true"><span /><span /><span /></div>
+          <BrandMark large />
           <div>
             <p className="eyebrow">Growing Trader</p>
             <h1>Opening your control plane</h1>
@@ -368,7 +380,7 @@ export default function SignalDashboard() {
         <section className="login-shell">
           <div className="login-context">
             <div className="brand-lockup">
-              <div className="brand-mark" aria-hidden="true"><span /><span /><span /></div>
+              <BrandMark />
               <span>Growing Trader</span>
             </div>
             <div className="login-copy">
@@ -427,149 +439,210 @@ export default function SignalDashboard() {
   const canStop = Boolean(worker.online && !busy);
 
   return (
-    <main className="shell">
-      <header className="topbar">
-        <div className="header-main">
-          <div className="brand-lockup">
-            <div className="brand-mark" aria-hidden="true"><span /><span /><span /></div>
-            <span>Growing Trader</span>
-          </div>
-          <div className="header-title">
-            <p className="eyebrow">Operations dashboard</p>
-            <h1>Market control</h1>
-            <p className="muted">Monitor the engine, verify the broker, and manage paper-trading levels.</p>
-          </div>
+    <div className="app-shell">
+      <a className="skip-link" href="#main-content">Skip to dashboard</a>
+
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <BrandMark />
+          <div><strong>Growing Trader</strong><span>Terminal v2</span></div>
         </div>
-        <div className="top-actions">
-          <span className="refresh-note"><Icon name="refresh" />Auto-refresh · 3s</span>
-          <span className="pill paper"><span className="status-dot amber" />Paper only</span>
-          <button type="button" className="ghost icon-button" onClick={logout}><Icon name="logout" /><span>Sign out</span></button>
+
+        <nav className="sidebar-nav" aria-label="Dashboard sections">
+          <p className="nav-group-label">Workspace</p>
+          <a className="nav-link active" href="#overview"><Icon name="activity" /><span>Overview</span></a>
+          <a className="nav-link" href="#broker"><Icon name="key" /><span>Broker</span></a>
+          <a className="nav-link" href="#paper-engine"><Icon name="chart" /><span>Paper engine</span></a>
+
+          <p className="nav-group-label">Insight</p>
+          <a className="nav-link" href="#diagnostics"><Icon name="terminal" /><span>Diagnostics</span></a>
+          <a className="nav-link" href="#signals"><Icon name="activity" /><span>Signals</span></a>
+          <a className="nav-link" href="#levels"><Icon name="layers" /><span>Trading levels</span></a>
+        </nav>
+
+        <div className="sidebar-footer">
+          <span className="sidebar-mode"><span className="status-dot amber" />Paper execution</span>
+          <small>No live orders</small>
         </div>
-      </header>
+      </aside>
 
-      {notice && <div className="notice" role="status" aria-live="polite"><Icon name="activity" /><span>{notice}</span></div>}
-      {Object.keys(backendErrors).length > 0 && (
-        <div className="notice error" role="alert">
-          <Icon name="shield" />
-          <div><strong>Control plane degraded.</strong><pre className="error-box">{JSON.stringify(backendErrors, null, 2)}</pre></div>
-        </div>
-      )}
-
-      <section className="status-strip" aria-label="System status">
-        <article className="status-card">
-          <div className="status-icon"><Icon name="server" /></div>
-          <div className="status-content"><span className="label">Oracle agent</span><strong className={oracleClass}><span className={`status-dot ${oracleClass}`} />{oracleState}</strong><small>Heartbeat · {fmtTime(worker.last_heartbeat)}</small></div>
-        </article>
-        <article className="status-card">
-          <div className="status-icon"><Icon name="shield" /></div>
-          <div className="status-content"><span className="label">Groww auth</span><strong className={worker.groww_authenticated ? "good" : "warn"}><span className={`status-dot ${worker.groww_authenticated ? "good" : "warn"}`} />{worker.groww_authenticated ? "READY" : "NOT VERIFIED"}</strong><small>Agent state · {worker.state ?? "idle"}</small></div>
-        </article>
-        <article className="status-card">
-          <div className="status-icon"><Icon name="wifi" /></div>
-          <div className="status-content"><span className="label">Market data</span><strong className={worker.market_data_status === "ok" ? "good" : worker.market_data_status === "error" ? "bad" : "warn"}><span className={`status-dot ${worker.market_data_status === "ok" ? "good" : worker.market_data_status === "error" ? "bad" : "warn"}`} />{(worker.market_data_status ?? "unknown").toUpperCase()}</strong><small>Oracle → Groww</small></div>
-        </article>
-        <article className="status-card">
-          <div className="status-icon"><Icon name="activity" /></div>
-          <div className="status-content"><span className="label">Paper engine</span><strong className={paperClass}><span className={`status-dot ${paperClass}`} />{paperState}</strong><small>{paper.feed_connected ? "Feed connected" : "Feed disconnected"}</small></div>
-        </article>
-      </section>
-
-      <section className="dashboard-grid">
-        <article className="card span-8">
-          <div className="card-head"><div className="title-with-icon"><div className="card-icon"><Icon name="key" /></div><div><span className="label">Broker connection</span><h2>Groww credentials</h2></div></div><span className="secure-badge"><Icon name="lock" />Server-side encrypted</span></div>
-          <p className="muted">Saving a new key/secret invalidates the previous Groww verification state. The credentials are never returned to the browser.</p>
-          <form className="credential-form" onSubmit={saveCredentials}>
-            <label className="field"><span>API key</span><input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" placeholder="Enter API key" required /></label>
-            <label className="field"><span>API secret</span><input type="password" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} autoComplete="off" placeholder="Enter API secret" required /></label>
-            <button className="primary" disabled={busy === "credentials"}>{busy === "credentials" ? <><Icon name="refresh" className="spin" />Encrypting…</> : <><Icon name="lock" />Save credentials</>}</button>
-          </form>
-        </article>
-
-        <article className="card span-4">
-          <div className="title-with-icon"><div className="card-icon"><Icon name="activity" /></div><div><span className="label">Oracle commands</span><h2>Connectivity tests</h2></div></div>
-          {!worker.online && <p className="muted">Start the Oracle control agent before running commands.</p>}
-          {worker.online && !status?.credentials.configured && <p className="muted">Save Groww credentials before running broker tests.</p>}
-          <div className="button-stack">
-            <button type="button" className="primary" onClick={() => command("TEST_AUTH")} disabled={!canBrokerTest}>{busy === "TEST_AUTH" ? <Icon name="refresh" className="spin" /> : <Icon name="shield" />}Test Groww authentication</button>
-            <button type="button" className="secondary" onClick={() => command("TEST_MARKET_DATA")} disabled={!canBrokerTest}>{busy === "TEST_MARKET_DATA" ? <Icon name="refresh" className="spin" /> : <Icon name="chart" />}Test Groww market data</button>
-            <button type="button" className="danger" onClick={() => command("STOP")} disabled={!canStop}>{busy === "STOP" ? <Icon name="refresh" className="spin" /> : <Icon name="stop" />}Stop Oracle agent</button>
+      <div className="workspace">
+        <header className="utility-bar">
+          <div className="mobile-brand"><BrandMark /><strong>Growing Trader</strong></div>
+          <div className="utility-context"><Icon name="terminal" /><span>Control plane</span><kbd>LIVE</kbd></div>
+          <div className="top-actions">
+            <span className="refresh-note"><Icon name="refresh" />Auto-refresh · 3s</span>
+            <span className="pill paper"><span className="status-dot amber" />Paper only</span>
+            <button type="button" className="ghost icon-button" onClick={logout} aria-label="Sign out"><Icon name="logout" /><span>Sign out</span></button>
           </div>
-        </article>
+        </header>
 
-        <article className="card span-4">
-          <div className="title-with-icon"><div className="card-icon"><Icon name="activity" /></div><div><span className="label">Paper engine controls</span><h2>Live research runner</h2></div></div>
-          <p className="muted">Streams LTP, scans quotes/OI, refreshes the option chain and writes paper signals. It cannot place a real Groww order.</p>
-          <div className="button-stack">
-            <button type="button" className="primary" onClick={() => command("START_PAPER_ENGINE")} disabled={!canStartPaper}>{busy === "START_PAPER_ENGINE" ? <Icon name="refresh" className="spin" /> : <Icon name="activity" />}Start paper engine</button>
-            <button type="button" className="secondary" onClick={() => command("STOP_PAPER_ENGINE")} disabled={!canStopPaper}>{busy === "STOP_PAPER_ENGINE" ? <Icon name="refresh" className="spin" /> : <Icon name="stop" />}Stop paper engine</button>
-          </div>
-        </article>
+        <nav className="mobile-nav" aria-label="Dashboard sections">
+          <a className="active" href="#overview">Overview</a>
+          <a href="#broker">Broker</a>
+          <a href="#paper-engine">Engine</a>
+          <a href="#diagnostics">Diagnostics</a>
+          <a href="#signals">Signals</a>
+          <a href="#levels">Levels</a>
+        </nav>
 
-        <article className="card span-8">
-          <div className="card-head"><div className="title-with-icon"><div className="card-icon"><Icon name="chart" /></div><div><span className="label">Live paper engine</span><h2>{paperState}</h2></div></div><span className="pill"><span className={`status-dot ${paperClass}`} />{paper.weighting ? `${paper.weighting} weights` : "paper"}</span></div>
-          <div className="metric-grid">
-            <div><span>Feed</span><strong className={paper.feed_connected ? "good" : "warn"}>{paper.feed_connected ? "CONNECTED" : "WAITING"}</strong></div>
-            <div><span>Constituents</span><strong>{paper.constituents_fresh ?? 0} / {paper.constituents_total ?? 50}</strong></div>
-            <div><span>NIFTY</span><strong>{fmtNumber(paper.nifty_ltp)}</strong></div>
-            <div><span>Data age</span><strong>{typeof paper.data_age_seconds === "number" ? `${paper.data_age_seconds.toFixed(1)}s` : "—"}</strong></div>
-            <div><span>Future</span><strong>{paper.future_symbol ?? "—"}</strong><small>{fmtNumber(paper.future_ltp)}</small></div>
-            <div><span>Option expiry</span><strong>{paper.option_expiry ?? "—"}</strong><small>{paper.option_contract_count ?? 0} contracts</small></div>
-            <div><span>Quote scan</span><strong>{paper.quote_successes ?? 0} / {paper.constituents_resolved ?? 0}</strong><small>{fmtTime(paper.last_quote_scan)}</small></div>
-            <div><span>Option refresh</span><strong>{fmtTime(paper.last_option_refresh)}</strong></div>
-          </div>
-          {paper.last_signal && <p className="muted">Last engine state: {(paper.last_signal.event ?? "—").toUpperCase()} · {(paper.last_signal.direction ?? "—").toUpperCase()} · risk {paper.last_signal.risk_allowed ? "ALLOW" : "BLOCK"}{paper.last_signal.paper_entry ? " · PAPER ENTRY" : ""}</p>}
-          {paper.open_paper_position && <pre className="json-box">{JSON.stringify(paper.open_paper_position, null, 2)}</pre>}
-          {paper.last_error && <pre className="error-box">{paper.last_error}</pre>}
-          {paper.quote_errors && paper.quote_errors.length > 0 && <pre className="error-box">{paper.quote_errors.join("\n")}</pre>}
-          <p className="muted">Universe dated {paper.universe_as_of ?? "—"}. Current V1 uses equal constituent weights; refresh real index weights before treating the cash score as production-grade.</p>
-        </article>
-
-        <article className="card span-4 command-card">
-          <div className="title-with-icon"><div className="card-icon"><Icon name="terminal" /></div><div><span className="label">Latest command</span><h2>{status?.latestCommand?.command?.replaceAll("_", " ") ?? "No command"}</h2></div></div>
-          <p className="command-state"><span className="status-dot neutral" />{status?.latestCommand?.status?.toUpperCase() ?? "—"}</p>
-          <p className="muted">Created {fmtTime(status?.latestCommand?.created_at)}</p>
-          {status?.latestCommand?.error && <pre className="error-box">{status.latestCommand.error}</pre>}
-          {status?.latestCommand?.result && <pre className="json-box">{JSON.stringify(status.latestCommand.result, null, 2)}</pre>}
-        </article>
-
-        <article className="card span-4">
-          <div className="title-with-icon"><div className="card-icon"><Icon name="database" /></div><div><span className="label">Control plane</span><h2 className={status?.controlPlane.healthy ? "good" : "bad"}>{status?.controlPlane.healthy ? "HEALTHY" : "DEGRADED"}</h2></div></div>
-          <p className="muted">{status?.credentials.configured ? "Credentials encrypted" : "Credentials missing"}</p>
-          <p className="muted">Paper status updated {fmtTime(paper.statusUpdatedAt)}</p>
-        </article>
-
-        <article className="card span-4">
-          <div className="card-head"><div className="title-with-icon"><div className="card-icon"><Icon name="chart" /></div><div><span className="label">Live data diagnostic</span><h2>NIFTY snapshot</h2></div></div><span className="pill"><span className={`status-dot ${worker.market_data_status === "ok" ? "good" : "neutral"}`} />{worker.market_data_status ?? "unknown"}</span></div>
-          {marketData ? <pre className="json-box tall">{JSON.stringify(marketData, null, 2)}</pre> : <div className="empty-state compact"><Icon name="chart" /><div><strong>Waiting for market data</strong><p>No successful Oracle market-data diagnostic yet.</p></div></div>}
-          {worker.last_error && <pre className="error-box">{worker.last_error}</pre>}
-        </article>
-
-        <article className="card span-6">
-          <div className="card-head"><div className="title-with-icon"><div className="card-icon"><Icon name="activity" /></div><div><span className="label">Algorithm</span><h2>Latest level-event signal</h2></div></div>{signal && <span className="confidence"><strong>{pct(signal.confidence)}</strong><small>confidence</small></span>}</div>
-          {!signal ? <div className="empty-state"><Icon name="activity" /><div><strong>No signal recorded</strong><p>The latest Oracle engine signal will appear here.</p></div></div> : <>
-            <div className="metric-grid">
-              <div className="metric-wide"><span>State</span><strong>{signal.event.toUpperCase()} · {signal.direction.toUpperCase()}</strong></div>
-              <div><span>Cash</span><strong>{signal.cash.score.toFixed(3)}</strong></div>
-              <div><span>Futures</span><strong>{signal.futures.score.toFixed(3)}</strong></div>
-              <div><span>Risk</span><strong className={signal.risk.allowed ? "good" : "warn"}>{signal.risk.allowed ? "ALLOW" : "BLOCK"}</strong></div>
+        <main className="workspace-content" id="main-content">
+          <section className="page-hero" id="overview">
+            <div>
+              <p className="eyebrow">Session · Paper market</p>
+              <h1>Market control</h1>
+              <p className="muted">Monitor the engine, verify broker connectivity, and manage level-event research from one terminal.</p>
             </div>
-            <p className="signal-reasons">{signal.reasons.join(" · ")}</p>
-          </>}
-        </article>
+            <div className="hero-health">
+              <span className={`status-dot ${status?.controlPlane.healthy ? "good" : "bad"}`} />
+              <div><small>Control plane</small><strong>{status?.controlPlane.healthy ? "Healthy" : "Degraded"}</strong></div>
+            </div>
+          </section>
 
-        <article className="card span-6">
-          <div className="card-head"><div className="title-with-icon"><div className="card-icon"><Icon name="layers" /></div><div><span className="label">Support / resistance</span><h2>Trading levels</h2></div></div><span className="pill">{status?.levels.length ?? 0} levels</span></div>
-          <form className="level-form" onSubmit={saveLevel}>
-            <label className="field"><span>Name</span><input value={levelName} onChange={(e) => setLevelName(e.target.value)} placeholder="S1 / R1" required /></label>
-            <label className="field"><span>Type</span><select value={levelKind} onChange={(e) => setLevelKind(e.target.value as "support" | "resistance")}><option value="support">Support</option><option value="resistance">Resistance</option></select></label>
-            <label className="field"><span>Price</span><input type="number" step="0.05" min="0" value={levelPrice} onChange={(e) => setLevelPrice(e.target.value)} placeholder="25,000" required /></label>
-            <button className="primary add-button" disabled={busy === "level"}>{busy === "level" ? <Icon name="refresh" className="spin" /> : <Icon name="plus" />}<span>{busy === "level" ? "Saving…" : "Add level"}</span></button>
-          </form>
-          {!status?.levels.length ? <div className="empty-state compact"><Icon name="layers" /><div><strong>No levels configured</strong><p>Add your first support or resistance level above.</p></div></div> : <div className="level-table-wrap"><table className="level-table"><thead><tr><th>Name</th><th>Type</th><th>Price</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{status.levels.map((level) => <tr key={level.id}><td><strong>{level.name}</strong></td><td><span className={`level-kind ${level.kind}`}>{level.kind}</span></td><td className="price-cell">{Number(level.price).toLocaleString()}</td><td><span className={`level-status ${level.enabled ? "enabled" : "disabled"}`}><span className={`status-dot ${level.enabled ? "good" : "neutral"}`} />{level.enabled ? "Enabled" : "Disabled"}</span></td><td><button type="button" className="mini-danger" onClick={() => removeLevel(level.id)} disabled={busy === `delete-${level.id}`} aria-label={`Remove ${level.name}`}>{busy === `delete-${level.id}` ? <Icon name="refresh" className="spin" /> : <Icon name="trash" />}</button></td></tr>)}</tbody></table></div>}
-        </article>
-      </section>
+          {notice && <div className="notice" role="status" aria-live="polite"><Icon name="activity" /><span>{notice}</span></div>}
+          {Object.keys(backendErrors).length > 0 && (
+            <div className="notice error" role="alert">
+              <Icon name="shield" />
+              <div><strong>Control plane degraded.</strong><pre className="error-box">{JSON.stringify(backendErrors, null, 2)}</pre></div>
+            </div>
+          )}
 
-      <footer className="dashboard-footer"><span><span className="status-dot good" />Secure control plane</span><span>Paper execution · No live orders</span></footer>
-    </main>
+          <section className="status-strip" aria-label="System status">
+            <article className="status-card">
+              <div className="status-card-head"><div className="status-icon"><Icon name="server" /></div><span className={`status-badge ${oracleClass}`}><span className={`status-dot ${oracleClass}`} />{oracleState}</span></div>
+              <div className="status-content"><span className="label">Oracle agent</span><strong>{oracleState}</strong><small>Heartbeat · {fmtTime(worker.last_heartbeat)}</small></div>
+              <StatusTrace tone={oracleClass} />
+            </article>
+            <article className="status-card">
+              <div className="status-card-head"><div className="status-icon"><Icon name="shield" /></div><span className={`status-badge ${worker.groww_authenticated ? "good" : "warn"}`}><span className={`status-dot ${worker.groww_authenticated ? "good" : "warn"}`} />{worker.groww_authenticated ? "Ready" : "Pending"}</span></div>
+              <div className="status-content"><span className="label">Groww auth</span><strong>{worker.groww_authenticated ? "VERIFIED" : "NOT VERIFIED"}</strong><small>Agent state · {worker.state ?? "idle"}</small></div>
+              <StatusTrace tone={worker.groww_authenticated ? "good" : "warn"} />
+            </article>
+            <article className="status-card">
+              <div className="status-card-head"><div className="status-icon"><Icon name="wifi" /></div><span className={`status-badge ${worker.market_data_status === "ok" ? "good" : worker.market_data_status === "error" ? "bad" : "warn"}`}><span className={`status-dot ${worker.market_data_status === "ok" ? "good" : worker.market_data_status === "error" ? "bad" : "warn"}`} />{worker.market_data_status ?? "unknown"}</span></div>
+              <div className="status-content"><span className="label">Market data</span><strong>{(worker.market_data_status ?? "unknown").toUpperCase()}</strong><small>Oracle → Groww</small></div>
+              <StatusTrace tone={worker.market_data_status === "ok" ? "good" : worker.market_data_status === "error" ? "bad" : "warn"} />
+            </article>
+            <article className="status-card">
+              <div className="status-card-head"><div className="status-icon"><Icon name="activity" /></div><span className={`status-badge ${paperClass}`}><span className={`status-dot ${paperClass}`} />{paperState}</span></div>
+              <div className="status-content"><span className="label">Paper engine</span><strong>{paperState}</strong><small>{paper.feed_connected ? "Feed connected" : "Feed disconnected"}</small></div>
+              <StatusTrace tone={paperClass} />
+            </article>
+          </section>
+
+          <section className="dashboard-section" id="broker" aria-labelledby="broker-heading">
+            <div className="section-heading"><div><p className="eyebrow">Connection</p><h2 id="broker-heading">Broker &amp; Oracle</h2></div><span>Secure credentials and connectivity</span></div>
+            <div className="dashboard-grid">
+              <article className="card span-8">
+                <div className="card-head"><div className="title-with-icon"><div className="card-icon"><Icon name="key" /></div><div><span className="label">Broker connection</span><h3>Groww credentials</h3></div></div><span className="secure-badge"><Icon name="lock" />Server-side encrypted</span></div>
+                <p className="muted">Saving a new key or secret invalidates the previous verification state. Credentials are never returned to the browser.</p>
+                <form className="credential-form" onSubmit={saveCredentials}>
+                  <label className="field"><span>API key</span><input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" placeholder="Enter API key" required /></label>
+                  <label className="field"><span>API secret</span><input type="password" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} autoComplete="off" placeholder="Enter API secret" required /></label>
+                  <button className="primary" disabled={busy === "credentials"}>{busy === "credentials" ? <><Icon name="refresh" className="spin" />Encrypting…</> : <><Icon name="lock" />Save credentials</>}</button>
+                </form>
+              </article>
+
+              <article className="card span-4">
+                <div className="title-with-icon"><div className="card-icon"><Icon name="activity" /></div><div><span className="label">Oracle commands</span><h3>Connectivity tests</h3></div></div>
+                {!worker.online && <p className="muted">Start the Oracle control agent before running commands.</p>}
+                {worker.online && !status?.credentials.configured && <p className="muted">Save Groww credentials before running broker tests.</p>}
+                <div className="button-stack">
+                  <button type="button" className="primary" onClick={() => command("TEST_AUTH")} disabled={!canBrokerTest}>{busy === "TEST_AUTH" ? <Icon name="refresh" className="spin" /> : <Icon name="shield" />}Test authentication</button>
+                  <button type="button" className="secondary" onClick={() => command("TEST_MARKET_DATA")} disabled={!canBrokerTest}>{busy === "TEST_MARKET_DATA" ? <Icon name="refresh" className="spin" /> : <Icon name="chart" />}Test market data</button>
+                  <button type="button" className="danger" onClick={() => command("STOP")} disabled={!canStop}>{busy === "STOP" ? <Icon name="refresh" className="spin" /> : <Icon name="stop" />}Stop Oracle agent</button>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section className="dashboard-section" id="paper-engine" aria-labelledby="engine-heading">
+            <div className="section-heading"><div><p className="eyebrow">Execution</p><h2 id="engine-heading">Paper engine</h2></div><span>Live research runner · no real orders</span></div>
+            <div className="dashboard-grid">
+              <article className="card span-8 engine-card">
+                <div className="card-head"><div className="title-with-icon"><div className="card-icon"><Icon name="chart" /></div><div><span className="label">Live paper engine</span><h3>{paperState}</h3></div></div><span className="pill"><span className={`status-dot ${paperClass}`} />{paper.weighting ? `${paper.weighting} weights` : "paper"}</span></div>
+                <div className="metric-grid engine-metrics">
+                  <div><span>Feed</span><strong className={paper.feed_connected ? "good" : "warn"}>{paper.feed_connected ? "CONNECTED" : "WAITING"}</strong></div>
+                  <div><span>Constituents</span><strong>{paper.constituents_fresh ?? 0} / {paper.constituents_total ?? 50}</strong></div>
+                  <div><span>NIFTY</span><strong>{fmtNumber(paper.nifty_ltp)}</strong></div>
+                  <div><span>Data age</span><strong>{typeof paper.data_age_seconds === "number" ? `${paper.data_age_seconds.toFixed(1)}s` : "—"}</strong></div>
+                  <div><span>Future</span><strong>{paper.future_symbol ?? "—"}</strong><small>{fmtNumber(paper.future_ltp)}</small></div>
+                  <div><span>Option expiry</span><strong>{paper.option_expiry ?? "—"}</strong><small>{paper.option_contract_count ?? 0} contracts</small></div>
+                  <div><span>Quote scan</span><strong>{paper.quote_successes ?? 0} / {paper.constituents_resolved ?? 0}</strong><small>{fmtTime(paper.last_quote_scan)}</small></div>
+                  <div><span>Option refresh</span><strong>{fmtTime(paper.last_option_refresh)}</strong></div>
+                </div>
+                {paper.last_signal && <p className="signal-reasons">Last state: {(paper.last_signal.event ?? "—").toUpperCase()} · {(paper.last_signal.direction ?? "—").toUpperCase()} · risk {paper.last_signal.risk_allowed ? "ALLOW" : "BLOCK"}{paper.last_signal.paper_entry ? " · PAPER ENTRY" : ""}</p>}
+                {paper.open_paper_position && <pre className="json-box">{JSON.stringify(paper.open_paper_position, null, 2)}</pre>}
+                {paper.last_error && <pre className="error-box">{paper.last_error}</pre>}
+                {paper.quote_errors && paper.quote_errors.length > 0 && <pre className="error-box">{paper.quote_errors.join("\n")}</pre>}
+                <p className="engine-footnote">Universe dated {paper.universe_as_of ?? "—"} · V1 uses equal constituent weights.</p>
+              </article>
+
+              <article className="card span-4 runner-card">
+                <div className="title-with-icon"><div className="card-icon"><Icon name="activity" /></div><div><span className="label">Engine controls</span><h3>Research runner</h3></div></div>
+                <p className="muted">Streams LTP, scans quotes and OI, refreshes the option chain, and writes paper signals.</p>
+                <div className="runner-state"><span>Current state</span><strong className={paperClass}><span className={`status-dot ${paperClass}`} />{paperState}</strong></div>
+                <div className="button-stack">
+                  <button type="button" className="primary" onClick={() => command("START_PAPER_ENGINE")} disabled={!canStartPaper}>{busy === "START_PAPER_ENGINE" ? <Icon name="refresh" className="spin" /> : <Icon name="activity" />}Start paper engine</button>
+                  <button type="button" className="secondary" onClick={() => command("STOP_PAPER_ENGINE")} disabled={!canStopPaper}>{busy === "STOP_PAPER_ENGINE" ? <Icon name="refresh" className="spin" /> : <Icon name="stop" />}Stop paper engine</button>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section className="dashboard-section" id="diagnostics" aria-labelledby="diagnostics-heading">
+            <div className="section-heading"><div><p className="eyebrow">System</p><h2 id="diagnostics-heading">Diagnostics</h2></div><span>Command and market-data visibility</span></div>
+            <div className="dashboard-grid">
+              <article className="card span-4 command-card">
+                <div className="title-with-icon"><div className="card-icon"><Icon name="terminal" /></div><div><span className="label">Latest command</span><h3>{status?.latestCommand?.command?.replaceAll("_", " ") ?? "No command"}</h3></div></div>
+                <p className="command-state"><span className="status-dot neutral" />{status?.latestCommand?.status?.toUpperCase() ?? "—"}</p>
+                <p className="muted">Created {fmtTime(status?.latestCommand?.created_at)}</p>
+                {status?.latestCommand?.error && <pre className="error-box">{status.latestCommand.error}</pre>}
+                {status?.latestCommand?.result && <pre className="json-box">{JSON.stringify(status.latestCommand.result, null, 2)}</pre>}
+              </article>
+
+              <article className="card span-4 control-card">
+                <div className="title-with-icon"><div className="card-icon"><Icon name="database" /></div><div><span className="label">Control plane</span><h3 className={status?.controlPlane.healthy ? "good" : "bad"}>{status?.controlPlane.healthy ? "HEALTHY" : "DEGRADED"}</h3></div></div>
+                <div className="diagnostic-list"><div><span>Credentials</span><strong>{status?.credentials.configured ? "Encrypted" : "Missing"}</strong></div><div><span>Paper status</span><strong>{fmtTime(paper.statusUpdatedAt)}</strong></div><div><span>Execution</span><strong>Paper only</strong></div></div>
+              </article>
+
+              <article className="card span-4">
+                <div className="card-head"><div className="title-with-icon"><div className="card-icon"><Icon name="chart" /></div><div><span className="label">Live diagnostic</span><h3>NIFTY snapshot</h3></div></div><span className="pill"><span className={`status-dot ${worker.market_data_status === "ok" ? "good" : "neutral"}`} />{worker.market_data_status ?? "unknown"}</span></div>
+                {marketData ? <pre className="json-box tall">{JSON.stringify(marketData, null, 2)}</pre> : <div className="empty-state compact"><Icon name="chart" /><div><strong>Waiting for market data</strong><p>No successful Oracle diagnostic yet.</p></div></div>}
+                {worker.last_error && <pre className="error-box">{worker.last_error}</pre>}
+              </article>
+            </div>
+          </section>
+
+          <section className="dashboard-section split-section" aria-label="Signals and levels">
+            <article className="card span-6" id="signals">
+              <div className="card-head"><div className="title-with-icon"><div className="card-icon"><Icon name="activity" /></div><div><span className="label">Algorithm</span><h3>Latest level-event signal</h3></div></div>{signal && <span className="confidence"><strong>{pct(signal.confidence)}</strong><small>confidence</small></span>}</div>
+              {!signal ? <div className="empty-state"><Icon name="activity" /><div><strong>No signal recorded</strong><p>The latest Oracle engine signal will appear here.</p></div></div> : <>
+                <div className="metric-grid signal-metrics">
+                  <div className="metric-wide"><span>State</span><strong>{signal.event.toUpperCase()} · {signal.direction.toUpperCase()}</strong></div>
+                  <div><span>Cash</span><strong>{signal.cash.score.toFixed(3)}</strong></div>
+                  <div><span>Futures</span><strong>{signal.futures.score.toFixed(3)}</strong></div>
+                  <div><span>Risk</span><strong className={signal.risk.allowed ? "good" : "warn"}>{signal.risk.allowed ? "ALLOW" : "BLOCK"}</strong></div>
+                </div>
+                <p className="signal-reasons">{signal.reasons.join(" · ")}</p>
+              </>}
+            </article>
+
+            <article className="card span-6" id="levels">
+              <div className="card-head"><div className="title-with-icon"><div className="card-icon"><Icon name="layers" /></div><div><span className="label">Support / resistance</span><h3>Trading levels</h3></div></div><span className="pill">{status?.levels.length ?? 0} levels</span></div>
+              <form className="level-form" onSubmit={saveLevel}>
+                <label className="field"><span>Name</span><input value={levelName} onChange={(e) => setLevelName(e.target.value)} placeholder="S1 / R1" required /></label>
+                <label className="field"><span>Type</span><select value={levelKind} onChange={(e) => setLevelKind(e.target.value as "support" | "resistance")}><option value="support">Support</option><option value="resistance">Resistance</option></select></label>
+                <label className="field"><span>Price</span><input type="number" inputMode="decimal" step="0.05" min="0" value={levelPrice} onChange={(e) => setLevelPrice(e.target.value)} placeholder="25,000" required /></label>
+                <button className="primary add-button" disabled={busy === "level"}>{busy === "level" ? <Icon name="refresh" className="spin" /> : <Icon name="plus" />}<span>{busy === "level" ? "Saving…" : "Add level"}</span></button>
+              </form>
+              {!status?.levels.length ? <div className="empty-state compact"><Icon name="layers" /><div><strong>No levels configured</strong><p>Add your first support or resistance level above.</p></div></div> : <div className="level-table-wrap"><table className="level-table"><thead><tr><th>Name</th><th>Type</th><th>Price</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{status.levels.map((level) => <tr key={level.id}><td><strong>{level.name}</strong></td><td><span className={`level-kind ${level.kind}`}>{level.kind}</span></td><td className="price-cell">{Number(level.price).toLocaleString()}</td><td><span className={`level-status ${level.enabled ? "enabled" : "disabled"}`}><span className={`status-dot ${level.enabled ? "good" : "neutral"}`} />{level.enabled ? "Enabled" : "Disabled"}</span></td><td><button type="button" className="mini-danger" onClick={() => removeLevel(level.id)} disabled={busy === `delete-${level.id}`} aria-label={`Remove ${level.name}`}>{busy === `delete-${level.id}` ? <Icon name="refresh" className="spin" /> : <Icon name="trash" />}</button></td></tr>)}</tbody></table></div>}
+            </article>
+          </section>
+
+          <footer className="dashboard-footer"><span><span className="status-dot good" />Secure control plane</span><span>Paper execution · No live orders</span></footer>
+        </main>
+      </div>
+    </div>
   );
 }
