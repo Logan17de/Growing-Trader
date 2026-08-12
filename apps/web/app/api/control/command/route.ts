@@ -1,7 +1,19 @@
 import { isDashboardAuthorized } from "@/lib/dashboardAuth";
 import { serverSupabase } from "@/lib/serverSupabase";
 
-const ALLOWED = new Set(["TEST_AUTH", "TEST_MARKET_DATA", "STOP"]);
+const ALLOWED = new Set([
+  "TEST_AUTH",
+  "TEST_MARKET_DATA",
+  "START_PAPER_ENGINE",
+  "STOP_PAPER_ENGINE",
+  "STOP",
+]);
+
+const NEEDS_CREDENTIALS = new Set([
+  "TEST_AUTH",
+  "TEST_MARKET_DATA",
+  "START_PAPER_ENGINE",
+]);
 
 function workerIsOnline(worker: { last_heartbeat?: string; state?: string } | null): boolean {
   if (!worker?.last_heartbeat || worker.state === "stopped") return false;
@@ -38,7 +50,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "Oracle worker is offline or stale" }, { status: 409 });
   }
 
-  if (command !== "STOP") {
+  if (NEEDS_CREDENTIALS.has(command)) {
     const { data: credentials, error: credentialError } = await supabase
       .from("broker_credentials")
       .select("broker")
@@ -46,7 +58,7 @@ export async function POST(request: Request) {
       .maybeSingle();
     if (credentialError) return Response.json({ error: credentialError.message }, { status: 503 });
     if (!credentials) {
-      return Response.json({ error: "Save Groww credentials before running broker tests" }, { status: 409 });
+      return Response.json({ error: "Save Groww credentials before starting broker work" }, { status: 409 });
     }
   }
 
