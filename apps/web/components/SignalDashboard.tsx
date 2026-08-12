@@ -1,57 +1,210 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { browserSupabase } from "@/lib/supabase";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import type { SignalPayload } from "@/lib/types";
 
+type WorkerStatus = {
+  online?: boolean;
+  state?: string;
+  execution_mode?: string;
+  last_heartbeat?: string;
+  groww_authenticated?: boolean;
+  market_data_status?: string;
+  market_data?: Record<string, unknown> | null;
+  last_error?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+type CommandStatus = {
+  id: string;
+  command: string;
+  status: string;
+  result?: Record<string, unknown> | null;
+  error?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+};
+
+type Level = { id:string; name:string; kind:string; price:number; source:string; enabled:boolean };
+
+type ControlStatus = {
+  worker: WorkerStatus;
+  latestCommand: CommandStatus | null;
+  credentials: { configured:boolean; updatedAt:string | null };
+  latestSignal: { payload: SignalPayload; observed_at:string } | null;
+  levels: Level[];
+};
+
 function pct(value: number) { return `${(value * 100).toFixed(0)}%`; }
+function fmtTime(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+}
+
+async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, { cache: "no-store", ...init });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
+  return body as T;
+}
 
 export default function SignalDashboard() {
-  const [signal, setSignal] = useState<SignalPayload | null>(null);
-  const [status, setStatus] = useState("waiting for Supabase configuration");
+  const [auth, setAuth] = useState<"checking"|"guest"|"ready">("checking");
+  const [password, setPassword] = useState("");
+  const [status, setStatus] = useState<ControlStatus | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [apiSecret, setApiSecret] = useState("");
+  const [busy, setBusy] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const data = await jsonRequest<ControlStatus>("/api/control/status");
+      setStatus(data);
+      setAuth("ready");
+    } catch (error) {
+      if (error instanceof Error && error.message === "unauthorized") setAuth("guest");
+      else setNotice(error instanceof Error ? error.message : "Failed to load dashboard status");
+    }
+  }, []);
 
   useEffect(() => {
-    const maybeClient = browserSupabase();
-    if (!maybeClient) return;
-    const client = maybeClient;
-    let mounted = true;
-    async function loadLatest() {
-      const { data, error } = await client.from("signals").select("payload")
-        .order("observed_at", { ascending: false }).limit(1).maybeSingle();
-      if (!mounted) return;
-      if (error) setStatus(error.message);
-      else if (data?.payload) { setSignal(data.payload as SignalPayload); setStatus("live"); }
-      else setStatus("connected — no signals yet");
-    }
-    void loadLatest();
-    const channel = client.channel("signals-dashboard").on(
-      "postgres_changes", { event: "INSERT", schema: "public", table: "signals" },
-      (payload) => {
-        const row = payload.new as { payload?: SignalPayload };
-        if (row.payload) { setSignal(row.payload); setStatus("live"); }
-      },
-    ).subscribe();
-    return () => { mounted = false; void client.removeChannel(channel); };
-  }, []);
+    void jsonRequest<{ authenticated:boolean }>("/api/auth/status")
+      .then((data) => data.authenticated ? loadStatus() : setAuth("guest"))
+      .catch(() => setAuth("guest"));
+  }, [loadStatus]);
+
+  useEffect(() => {
+    if (auth !== "ready") return;
+    const timer = window.setInterval(() => void loadStatus(), 3000);
+    return () => window.clearInterval(timer);
+  }, [auth, loadStatus]);
+
+  async function login(event: FormEvent) {
+    event.preventDefault();
+    setBusy("login"); setNotice("");
+    try {
+      await jsonRequest("/api/auth/login", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ password }) });
+      setPassword("");
+      await loadStatus();
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Login failed"); }
+    finally { setBusy(""); }
+  }
+
+  async function saveCredentials(event: FormEvent) {
+    event.preventDefault();
+    setBusy("credentials"); setNotice("");
+    try {
+      await jsonRequest("/api/control/credentials", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ apiKey, apiSecret }) });
+      setApiKey(""); setApiSecret(""); setNotice("Groww credentials encrypted and saved. Oracle can now use them.");
+      await loadStatus();
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not save credentials"); }
+    finally { setBusy(""); }
+  }
+
+  async function command(commandName: "TEST_AUTH"|"TEST_MARKET_DATA"|"STOP") {
+    setBusy(commandName); setNotice("");
+    try {
+      await jsonRequest("/api/control/command", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ command:commandName }) });
+      setNotice(`${commandName} queued for Oracle.`);
+      await loadStatus();
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Command failed"); }
+    finally { setBusy(""); }
+  }
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method:"POST" });
+    setStatus(null); setAuth("guest");
+  }
+
+  if (auth === "checking") return <main className="center-shell"><div className="login-card"><p className="eyebrow">GROWING TRADER</p><h1>Loading control plane…</h1></div></main>;
+
+  if (auth === "guest") return (
+    <main className="center-shell">
+      <form className="login-card" onSubmit={login}>
+        <p className="eyebrow">GROWING TRADER</p>
+        <h1>Trading control plane</h1>
+        <p className="muted">Private dashboard for the Vercel ↔ Oracle ↔ Groww stack.</p>
+        <label className="field"><span>Dashboard password</span><input type="password" value={password} onChange={(e)=>setPassword(e.target.value)} autoComplete="current-password" required /></label>
+        <button className="primary" disabled={busy==="login"}>{busy==="login" ? "Signing in…" : "Open dashboard"}</button>
+        {notice && <p className="notice error">{notice}</p>}
+      </form>
+    </main>
+  );
+
+  const worker = status?.worker ?? {};
+  const signal = status?.latestSignal?.payload ?? null;
+  const marketData = worker.market_data ?? null;
 
   return (
     <main className="shell">
-      <header><p className="eyebrow">NIFTY MARKET ENGINE</p><h1>Level-event monitor</h1><p className="muted">{status}</p></header>
-      {!signal ? <section className="card"><p>No signal payload yet.</p></section> : <>
-        <section className="hero card">
-          <div><span className="label">STATE</span><strong>{signal.event.toUpperCase()} · {signal.direction.toUpperCase()}</strong></div>
-          <div><span className="label">CONFIDENCE</span><strong>{pct(signal.confidence)}</strong></div>
-          <div><span className="label">LEVEL</span><strong>{signal.level.level_name ?? "—"}</strong></div>
-          <div><span className="label">RISK GATE</span><strong>{signal.risk.allowed ? "ALLOW" : "BLOCK"}</strong></div>
-        </section>
-        <section className="grid">
-          <article className="card"><span className="label">CASH PARTICIPATION</span><h2>{signal.cash.score.toFixed(3)}</h2><p>Pressure {signal.cash.pressure.toFixed(3)} · breadth {signal.cash.advancers}/{signal.cash.decliners}</p><p>Participation {pct(signal.cash.participation)}</p></article>
-          <article className="card"><span className="label">FUTURES</span><h2>{signal.futures.score.toFixed(3)}</h2><p>OI confirmation {signal.futures.oi_confirmation.toFixed(3)}</p><p>Basis change {signal.futures.basis_change.toFixed(3)}</p></article>
-          <article className="card"><span className="label">LEVEL CLASSIFIER</span><h2>{signal.level.event_score.toFixed(3)}</h2><p>Breakout {signal.level.breakout_score.toFixed(3)}</p><p>Reversal {signal.level.reversal_score.toFixed(3)}</p></article>
-          <article className="card"><span className="label">OPTION</span><h2>{signal.contract.contract?.trading_symbol ?? "NO CONTRACT"}</h2><p>Selection score {signal.contract.score.toFixed(3)}</p><p>Quantity {signal.risk.quantity}</p></article>
-        </section>
-        <section className="card"><span className="label">WHY</span><ul>{signal.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></section>
-      </>}
+      <header className="topbar">
+        <div><p className="eyebrow">GROWING TRADER</p><h1>Market control</h1><p className="muted">Vercel is the control plane. Oracle owns Groww connectivity and algorithm execution.</p></div>
+        <div className="top-actions"><span className="pill paper">PAPER ONLY</span><button className="ghost" onClick={logout}>Sign out</button></div>
+      </header>
+
+      {notice && <div className="notice">{notice}</div>}
+
+      <section className="status-strip">
+        <article className="status-card"><span className="label">ORACLE</span><strong className={worker.online ? "good" : "bad"}>{worker.online ? "ONLINE" : "OFFLINE"}</strong><small>{fmtTime(worker.last_heartbeat)}</small></article>
+        <article className="status-card"><span className="label">GROWW AUTH</span><strong className={worker.groww_authenticated ? "good" : "warn"}>{worker.groww_authenticated ? "READY" : "NOT VERIFIED"}</strong><small>{worker.state ?? "idle"}</small></article>
+        <article className="status-card"><span className="label">MARKET DATA</span><strong>{(worker.market_data_status ?? "unknown").toUpperCase()}</strong><small>Oracle → Groww</small></article>
+        <article className="status-card"><span className="label">CREDENTIALS</span><strong className={status?.credentials.configured ? "good" : "warn"}>{status?.credentials.configured ? "ENCRYPTED" : "MISSING"}</strong><small>{fmtTime(status?.credentials.updatedAt)}</small></article>
+      </section>
+
+      <section className="dashboard-grid">
+        <article className="card span-2">
+          <div className="card-head"><div><span className="label">BROKER CONNECTION</span><h2>Groww credentials</h2></div><span className="secure-badge">🔒 server-side encrypted</span></div>
+          <p className="muted">The browser sends these over HTTPS to a Vercel server route. They are encrypted before storage and are never returned to the browser.</p>
+          <form className="credential-form" onSubmit={saveCredentials}>
+            <label className="field"><span>API key</span><input type="password" value={apiKey} onChange={(e)=>setApiKey(e.target.value)} autoComplete="off" required /></label>
+            <label className="field"><span>API secret</span><input type="password" value={apiSecret} onChange={(e)=>setApiSecret(e.target.value)} autoComplete="off" required /></label>
+            <button className="primary" disabled={busy==="credentials"}>{busy==="credentials" ? "Encrypting…" : "Save encrypted credentials"}</button>
+          </form>
+        </article>
+
+        <article className="card">
+          <span className="label">ORACLE COMMANDS</span><h2>Connectivity tests</h2>
+          <div className="button-stack">
+            <button className="primary" onClick={()=>command("TEST_AUTH")} disabled={Boolean(busy)}>Test Groww authentication</button>
+            <button className="secondary" onClick={()=>command("TEST_MARKET_DATA")} disabled={Boolean(busy)}>Test NIFTY market data</button>
+            <button className="danger" onClick={()=>command("STOP")} disabled={Boolean(busy)}>Stop worker activity</button>
+          </div>
+        </article>
+
+        <article className="card">
+          <span className="label">LATEST COMMAND</span><h2>{status?.latestCommand?.command ?? "No command"}</h2>
+          <p className="command-state">{status?.latestCommand?.status?.toUpperCase() ?? "—"}</p>
+          <p className="muted">Created {fmtTime(status?.latestCommand?.created_at)}</p>
+          {status?.latestCommand?.error && <pre className="error-box">{status.latestCommand.error}</pre>}
+          {status?.latestCommand?.result && <pre className="json-box">{JSON.stringify(status.latestCommand.result, null, 2)}</pre>}
+        </article>
+
+        <article className="card span-2">
+          <div className="card-head"><div><span className="label">LIVE DATA</span><h2>NIFTY snapshot</h2></div><span className="pill">{worker.market_data_status ?? "unknown"}</span></div>
+          {marketData ? <pre className="json-box tall">{JSON.stringify(marketData, null, 2)}</pre> : <p className="muted">No Oracle market-data result yet. Run “Test NIFTY market data”.</p>}
+          {worker.last_error && <pre className="error-box">{worker.last_error}</pre>}
+        </article>
+
+        <article className="card span-2">
+          <div className="card-head"><div><span className="label">ALGORITHM</span><h2>Latest level-event signal</h2></div>{signal && <span className="pill">{pct(signal.confidence)}</span>}</div>
+          {!signal ? <p className="muted">No signal has been written by the Oracle engine yet.</p> : <>
+            <div className="metric-grid">
+              <div><span>State</span><strong>{signal.event.toUpperCase()} · {signal.direction.toUpperCase()}</strong></div>
+              <div><span>Cash</span><strong>{signal.cash.score.toFixed(3)}</strong></div>
+              <div><span>Futures</span><strong>{signal.futures.score.toFixed(3)}</strong></div>
+              <div><span>Risk</span><strong className={signal.risk.allowed ? "good" : "warn"}>{signal.risk.allowed ? "ALLOW" : "BLOCK"}</strong></div>
+            </div>
+            <p className="muted">{signal.reasons.join(" · ")}</p>
+          </>}
+        </article>
+
+        <article className="card span-2">
+          <span className="label">SUPPORT / RESISTANCE</span><h2>Active levels</h2>
+          {!status?.levels.length ? <p className="muted">No levels configured yet.</p> : <div className="level-list">{status.levels.map((level)=><div key={level.id}><strong>{level.name}</strong><span>{level.kind}</span><b>{Number(level.price).toLocaleString()}</b><em>{level.enabled ? "enabled" : "disabled"}</em></div>)}</div>}
+        </article>
+      </section>
     </main>
   );
 }
