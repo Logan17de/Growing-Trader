@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import logging
 
 from .engine import SignalEngine
 from .models import (
@@ -47,12 +48,24 @@ def paper_demo() -> None:
     print(dumps(engine.evaluate(_demo_snapshot(), levels, state)))
 
 
+def control_agent() -> None:
+    from .control_plane import OracleControlAgent, SupabaseControlPlane
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    OracleControlAgent(SupabaseControlPlane.from_env()).run_forever()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="NIFTY market event engine")
-    parser.add_argument("command", choices=["paper-demo"])
+    parser.add_argument("command", choices=["paper-demo", "control-agent"])
     args = parser.parse_args()
     if args.command == "paper-demo":
         paper_demo()
+    elif args.command == "control-agent":
+        control_agent()
 
 
 if __name__ == "__main__":
