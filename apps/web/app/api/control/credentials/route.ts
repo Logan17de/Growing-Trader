@@ -3,7 +3,9 @@ import { isDashboardAuthorized } from "@/lib/dashboardAuth";
 import { serverSupabase } from "@/lib/serverSupabase";
 
 export async function POST(request: Request) {
-  if (!(await isDashboardAuthorized())) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!(await isDashboardAuthorized())) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
 
   let body: { apiKey?: string; apiSecret?: string };
   try {
@@ -22,13 +24,23 @@ export async function POST(request: Request) {
   }
 
   const supabase = serverSupabase();
+  const now = new Date().toISOString();
   const { error } = await supabase.from("broker_credentials").upsert({
     broker: "groww",
     api_key_ciphertext: encryptCredential(apiKey),
     api_secret_ciphertext: encryptCredential(apiSecret),
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   }, { onConflict: "broker" });
 
   if (error) return Response.json({ error: error.message }, { status: 500 });
+
+  await supabase.from("engine_status").update({
+    groww_authenticated: false,
+    market_data_status: "unknown",
+    market_data: null,
+    last_error: null,
+    updated_at: now,
+  }).eq("worker_id", "oracle-primary");
+
   return Response.json({ ok: true, configured: true });
 }
