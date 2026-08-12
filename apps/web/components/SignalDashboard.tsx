@@ -12,20 +12,20 @@ import { TerminalShell } from "@/components/terminal/TerminalShell";
 import { jsonRequest } from "@/lib/controlClient";
 import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/format";
 import { calculatePaperAnalytics } from "@/lib/terminalAnalytics";
-import type { ControlCommand, ControlStatus } from "@/lib/terminalTypes";
+import type { ControlCommand, ControlStatus, TradingDataSnapshot } from "@/lib/terminalTypes";
 
 type Confirmation =
   | { kind: "command"; command: "STOP_PAPER_ENGINE" | "STOP" }
   | { kind: "level"; id: string; name: string }
   | null;
 
-function normalizeStatus(data: ControlStatus): ControlStatus {
+function normalizeStatus(data: ControlStatus, current?: ControlStatus | null): ControlStatus {
   return {
     ...data,
-    recentSignals: data.recentSignals ?? [],
-    paperOrders: data.paperOrders ?? [],
-    paperTrades: data.paperTrades ?? [],
-    paperOutcomes: data.paperOutcomes ?? [],
+    recentSignals: data.recentSignals ?? current?.recentSignals ?? [],
+    paperOrders: data.paperOrders ?? current?.paperOrders ?? [],
+    paperTrades: data.paperTrades ?? current?.paperTrades ?? [],
+    paperOutcomes: data.paperOutcomes ?? current?.paperOutcomes ?? [],
   };
 }
 
@@ -42,10 +42,21 @@ export default function SignalDashboard() {
   const [notice, setNotice] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
 
+  const loadTradingData = useCallback(async () => {
+    try {
+      const data = await jsonRequest<TradingDataSnapshot>("/api/control/trading");
+      setStatus((current) => current ? { ...current, ...data } : current);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Failed to load trading history";
+      if (message === "unauthorized") setAuth("guest");
+      else setNotice((current) => current || `Trading history: ${message}`);
+    }
+  }, []);
+
   const loadStatus = useCallback(async () => {
     try {
-      const data = normalizeStatus(await jsonRequest<ControlStatus>("/api/control/status"));
-      setStatus(data);
+      const data = await jsonRequest<ControlStatus>("/api/control/status");
+      setStatus((current) => normalizeStatus(data, current));
       setAuth("ready");
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Failed to load dashboard status";
@@ -65,6 +76,13 @@ export default function SignalDashboard() {
     const timer = window.setInterval(() => void loadStatus(), 3000);
     return () => window.clearInterval(timer);
   }, [auth, loadStatus]);
+
+  useEffect(() => {
+    if (auth !== "ready") return;
+    void loadTradingData();
+    const timer = window.setInterval(() => void loadTradingData(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [auth, loadTradingData]);
 
   async function login(event: FormEvent) {
     event.preventDefault(); setBusy("login"); setNotice("");

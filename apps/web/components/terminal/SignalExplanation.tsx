@@ -19,6 +19,8 @@ export function SignalExplanation({ signal, level }: { signal: SignalPayload | n
       <div><span>Market score</span><strong>{formatNumber(signal.combined_direction_score, 3)}</strong><small>{signal.direction}</small></div>
       <div><span>Participation</span><strong>{formatPercent(signal.cash.participation)}</strong><small>{signal.cash.advancers} advancing · {signal.cash.decliners} declining</small></div>
       <div><span>Futures / OI</span><strong>{formatNumber(signal.futures.score, 3)} / {formatNumber(signal.futures.oi_confirmation, 3)}</strong><small>Persisted engine metrics</small></div>
+      <div><span>Options activity</span><strong>{signal.option_market?.ready ? formatNumber(signal.option_market.score, 3) : "Unavailable"}</strong><small>{signal.option_market?.ready ? `${signal.option_market.contracts_used} contracts` : "Not ready in this signal"}</small></div>
+      <div><span>Synthetic VWAP</span><strong>{signal.vwap?.ready ? formatNumber(signal.vwap.synthetic_vwap) : "Unavailable"}</strong><small>{signal.vwap?.ready ? `${formatNumber(signal.vwap.distance_bps)} bps · score ${formatNumber(signal.vwap.score, 3)}` : "Not ready in this signal"}</small></div>
     </div>
     <div className="condition-list" aria-label="Persisted signal reasons">
       {reasons.map((reason, index) => <div key={`${reason}-${index}`}><span className={signal.reasons.length ? "condition-pass" : "condition-neutral"}><Icon name={signal.reasons.length ? "check" : "minus"} /></span><span>{reason}</span></div>)}

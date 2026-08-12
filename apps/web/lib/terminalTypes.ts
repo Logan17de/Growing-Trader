@@ -42,6 +42,20 @@ export type PaperEngineStatus = {
   last_quote_scan?: string;
   last_option_refresh?: string;
   data_age_seconds?: number;
+  synthetic_vwap?: number | null;
+  whole_nifty_volume_delta?: number;
+  whole_nifty_turnover?: number;
+  heavyweight_score?: number;
+  cash_pressure?: number;
+  breadth?: number;
+  participation?: number;
+  option_direction_score?: number;
+  option_direction_ready?: boolean;
+  vwap_score?: number;
+  combined_direction_score?: number;
+  thresholds_updated_at?: string | null;
+  opening_no_entry_minutes?: number;
+  last_exit_reason?: string | null;
   last_error?: string | null;
   last_signal?: {
     event?: string;
@@ -133,6 +147,11 @@ export type ControlStatus = {
   paperTrades: PaperTrade[];
   paperOutcomes: PaperOutcome[];
 };
+
+export type TradingDataSnapshot = Pick<
+  ControlStatus,
+  "recentSignals" | "paperOrders" | "paperTrades" | "paperOutcomes"
+>;
 
 export type ControlCommand =
   | "TEST_AUTH"

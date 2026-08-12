@@ -17,6 +17,12 @@ export function MarketOverviewPanel({ status }: { status: ControlStatus }) {
       <MetricCard label="Fresh constituents" value={`${paper.constituents_fresh ?? 0} / ${paper.constituents_total ?? 50}`} detail={`${paper.quote_successes ?? 0} successful quote reads`} icon="positions" />
       <MetricCard label="Option contracts" value={formatNumber(paper.option_contract_count, 0)} detail={paper.option_expiry ? `Expiry ${paper.option_expiry}` : "Expiry unavailable"} icon="orders" unavailable={typeof paper.option_contract_count !== "number"} />
       <MetricCard label="Market exposure" value={formatCurrency(deployed)} detail={deployed === null ? undefined : "Current paper premium deployed"} icon="shield" unavailable={deployed === null} />
+      <MetricCard label="50-stock volume" value={formatNumber(paper.whole_nifty_volume_delta, 0)} detail="Full-session aggregate share-volume delta" unavailable={typeof paper.whole_nifty_volume_delta !== "number"} />
+      <MetricCard label="50-stock turnover" value={formatCurrency(paper.whole_nifty_turnover)} detail="Aggregate constituent turnover" unavailable={typeof paper.whole_nifty_turnover !== "number"} />
+      <MetricCard label="Market breadth" value={typeof paper.breadth === "number" ? formatNumber(paper.breadth, 3) : undefined} detail="Engine aggregate breadth score" unavailable={typeof paper.breadth !== "number"} />
+      <MetricCard label="Participation" value={typeof paper.participation === "number" ? formatNumber(paper.participation, 3) : undefined} detail="Fresh constituent participation" unavailable={typeof paper.participation !== "number"} />
+      <MetricCard label="Synthetic VWAP" value={formatNumber(paper.synthetic_vwap)} detail={typeof paper.vwap_score === "number" ? `VWAP score ${formatNumber(paper.vwap_score, 3)}` : "VWAP score unavailable"} unavailable={typeof paper.synthetic_vwap !== "number"} />
+      <MetricCard label="Options activity" value={paper.option_direction_ready ? formatNumber(paper.option_direction_score, 3) : undefined} detail={paper.option_direction_ready ? "Cross-chain direction score" : "Option activity warming or unavailable"} unavailable={!paper.option_direction_ready || typeof paper.option_direction_score !== "number"} />
     </section>
 
     <section className="dashboard-grid terminal-section">
@@ -37,7 +43,7 @@ export function MarketOverviewPanel({ status }: { status: ControlStatus }) {
 
     <section className="dashboard-grid terminal-section">
       <article className="card span-6"><div className="section-heading compact"><div><p className="eyebrow">Derivatives</p><h2>Option chain, PCR &amp; IV</h2></div></div><BackendUnavailable title="Option-chain rows are not exposed to the web app" description="The paper worker consumes real chain data for contract selection, but the authenticated status API currently exposes only expiry and contract count. No strikes, OI, PCR, or IV are invented here." /></article>
-      <article className="card span-6"><div className="section-heading compact"><div><p className="eyebrow">Breadth</p><h2>Constituents &amp; sector heatmap</h2></div></div><BackendUnavailable title="Constituent and sector snapshots are not persisted" description="The engine calculates participation and breadth inside each signal, but per-symbol and sector rows are not available through the current storage contract." /></article>
+      <article className="card span-6"><div className="section-heading compact"><div><p className="eyebrow">Constituents</p><h2>Movement &amp; sector heatmap</h2></div></div><BackendUnavailable title="Per-symbol and sector snapshots are not persisted" description="Real aggregate breadth, participation, heavyweight, volume, and turnover telemetry are shown above. Per-constituent movement, weighted contribution rows, and sector membership are still absent from the storage contract." /></article>
     </section>
   </>;
 }

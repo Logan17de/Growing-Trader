@@ -360,6 +360,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .terminal-section { margin-top: 16px; }
 .span-5 { grid-column: span 5; }
 .span-7 { grid-column: span 7; }
+.span-12 { grid-column: 1 / -1; }
 .section-heading.compact { align-items: center; margin-bottom: 16px; }
 .section-heading.compact h2 { font-size: 1.04rem; }
 .section-heading.compact > span { max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -491,6 +492,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .strategy-stats span { color: var(--muted-dim); font-size: .58rem; }
 .strategy-stats strong { overflow: hidden; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .strategy-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.research-section { min-width: 0; }
+.strategy-research-embed { min-width: 0; }
+.strategy-research-embed > .dashboard-grid { margin-bottom: 12px !important; }
+.strategy-research-embed .card { border-radius: 12px; }
+.strategy-research-embed .metric-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .mode-action { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px; background: #1a1d1f; color: var(--muted); font-size: .7rem; }
 .mode-action.selected { border-color: rgba(231, 168, 75, .25); color: #e8b768; }
 .mode-action.live { border-color: rgba(240, 100, 100, .22); color: #bd7474; }

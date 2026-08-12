@@ -57,7 +57,7 @@ function turnover(value: number | undefined) {
   return `₹${(value / 10_000_000).toFixed(1)}Cr`;
 }
 
-export default function StrategyObservability() {
+export default function StrategyObservability({ embedded = false }: { embedded?: boolean }) {
   const [data, setData] = useState<StatusPayload | null>(null);
   const [error, setError] = useState("");
 
@@ -92,8 +92,8 @@ export default function StrategyObservability() {
   const paper = data?.paperEngine ?? {};
 
   return (
-    <main style={{ width: "min(1500px, 95vw)", margin: "0 auto", padding: "28px 0 72px" }}>
-      <header style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 24, marginBottom: 18 }}>
+    <section className={embedded ? "strategy-research-embed" : "strategy-research-standalone"} style={embedded ? undefined : { width: "min(1500px, 95vw)", margin: "0 auto", padding: "28px 0 72px" }}>
+      {!embedded && <header style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 24, marginBottom: 18 }}>
         <div>
           <p className="eyebrow">Growing Trader · Research</p>
           <h1 style={{ margin: "5px 0 8px", fontSize: "clamp(2rem,4vw,3.5rem)", letterSpacing: "-.045em" }}>Strategy &amp; NIFTY volume</h1>
@@ -102,7 +102,7 @@ export default function StrategyObservability() {
           </p>
         </div>
         <a className="secondary" href="/" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}>← Market control</a>
-      </header>
+      </header>}
 
       {error && (
         <div className="notice error" role="alert" style={{ marginBottom: 16 }}>
@@ -172,6 +172,6 @@ export default function StrategyObservability() {
       <p className="muted" style={{ marginTop: 16, fontSize: ".78rem" }}>
         Entry warm-up: {paper.opening_no_entry_minutes ?? "—"} minutes after 09:15 IST · Latest dynamic exit: {paper.last_exit_reason ?? "none"} · Execution remains paper-only.
       </p>
-    </main>
+    </section>
   );
 }

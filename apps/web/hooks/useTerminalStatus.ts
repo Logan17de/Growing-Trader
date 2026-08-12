@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { jsonRequest } from "@/lib/controlClient";
-import type { ControlStatus } from "@/lib/terminalTypes";
+import type { ControlStatus, TradingDataSnapshot } from "@/lib/terminalTypes";
 
 export type TerminalAuthState = "checking" | "guest" | "ready";
 
@@ -28,17 +28,28 @@ export function useTerminalStatus(pollIntervalMs = 3000) {
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
+  const refreshTradingData = useCallback(async () => {
+    try {
+      const data = await jsonRequest<TradingDataSnapshot>("/api/control/trading");
+      setStatus((current) => current ? { ...current, ...data } : current);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Unable to load trading history";
+      if (message === "unauthorized") setAuth("guest");
+      else setError((current) => current || `Trading history: ${message}`);
+    }
+  }, []);
+
   const refresh = useCallback(async (background = false) => {
     if (!background) setRefreshing(true);
     try {
       const data = await jsonRequest<ControlStatus>("/api/control/status");
-      setStatus({
+      setStatus((current) => ({
         ...data,
-        recentSignals: data.recentSignals ?? [],
-        paperOrders: data.paperOrders ?? [],
-        paperTrades: data.paperTrades ?? [],
-        paperOutcomes: data.paperOutcomes ?? [],
-      });
+        recentSignals: data.recentSignals ?? current?.recentSignals ?? [],
+        paperOrders: data.paperOrders ?? current?.paperOrders ?? [],
+        paperTrades: data.paperTrades ?? current?.paperTrades ?? [],
+        paperOutcomes: data.paperOutcomes ?? current?.paperOutcomes ?? [],
+      }));
       setAuth("ready");
       setError("");
     } catch (reason) {
@@ -68,11 +79,23 @@ export function useTerminalStatus(pollIntervalMs = 3000) {
     return () => window.clearInterval(timer);
   }, [auth, pollIntervalMs, refresh]);
 
+  useEffect(() => {
+    if (auth !== "ready") return;
+    void refreshTradingData();
+    const timer = window.setInterval(() => void refreshTradingData(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [auth, refreshTradingData]);
+
   const logout = useCallback(async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     setStatus(null);
     setAuth("guest");
   }, []);
 
-  return { auth, status, error, refreshing, refresh, logout };
+  const refreshAll = useCallback(async () => {
+    await refresh();
+    await refreshTradingData();
+  }, [refresh, refreshTradingData]);
+
+  return { auth, status, error, refreshing, refresh: refreshAll, logout };
 }
