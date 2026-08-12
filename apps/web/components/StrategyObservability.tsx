@@ -63,7 +63,7 @@ export default function StrategyObservability() {
 
   const load = useCallback(async () => {
     try {
-      const response = await fetch("/api/control/status", { cache: "no-store" });
+      const response = await fetch("/api/control/research", { cache: "no-store" });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
       setData(body as StatusPayload);
@@ -75,7 +75,7 @@ export default function StrategyObservability() {
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 3000);
+    const timer = window.setInterval(() => void load(), 10_000);
     return () => window.clearInterval(timer);
   }, [load]);
 
@@ -144,7 +144,7 @@ export default function StrategyObservability() {
             Oracle reloads these values while the engine is running. Invalid combinations fail validation instead of silently changing the strategy. Current threshold snapshot: {paper.thresholds_updated_at ? new Date(paper.thresholds_updated_at).toLocaleString() : "—"}.
           </p>
           {groups.length === 0 ? (
-            <p className="muted">Apply migration 005 to create and seed the strategy parameter table.</p>
+            <p className="muted">Apply migrations 005 and 006 to create the parameter tables and full-session volume view.</p>
           ) : groups.map(([category, parameters]) => (
             <div key={category} style={{ marginTop: 22 }}>
               <p className="eyebrow" style={{ marginBottom: 8 }}>{category.replaceAll("_", " ")}</p>
