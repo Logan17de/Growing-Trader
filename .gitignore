@@ -15,4 +15,5 @@ dist/
 build/
 *.log
 *.jsonl
+*.tsbuildinfo
 .DS_Store
