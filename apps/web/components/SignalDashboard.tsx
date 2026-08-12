@@ -67,8 +67,12 @@ export default function SignalDashboard() {
       setStatus(data);
       setAuth("ready");
     } catch (error) {
-      if (error instanceof Error && error.message === "unauthorized") setAuth("guest");
-      else setNotice(error instanceof Error ? error.message : "Failed to load dashboard status");
+      if (error instanceof Error && error.message === "unauthorized") {
+        setAuth("guest");
+      } else {
+        setNotice(error instanceof Error ? error.message : "Failed to load dashboard status");
+        setAuth("ready");
+      }
     }
   }, []);
 
