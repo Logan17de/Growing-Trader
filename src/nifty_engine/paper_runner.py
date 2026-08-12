@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time as clock_time, timezone
+from datetime import datetime, time as clock_time, timedelta, timezone
 import logging
 import os
 import threading
@@ -11,17 +11,20 @@ from zoneinfo import ZoneInfo
 
 from .brokers.groww_data import SlidingWindowRateLimiter
 from .engine import SignalEngine
+from .exits import evaluate_dynamic_exit
 from .instrument_registry import InstrumentRegistry, load_nifty50_universe
 from .market_feed import GrowwLiveFeed
-from .market_state import LiveMarketState
-from .models import LevelKind, Signal, SupportResistanceLevel
+from .market_state import DEFAULT_HEAVYWEIGHTS, LiveMarketState
+from .models import Direction, LevelKind, MarketSnapshot, Signal, SupportResistanceLevel
 from .option_chain import option_ltp, parse_option_chain
+from .params import StrategyParams
 from .risk import RiskState
 from .serialization import to_primitive
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 OUTCOME_HORIZONS = (60, 180, 300, 600, 900)
+PARAM_REFRESH_SECONDS = 30.0
 
 
 def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
@@ -41,7 +44,6 @@ class PaperEngineConfig:
     option_refresh_seconds: float = 20.0
     feed_poll_seconds: float = 1.0
     signal_persist_seconds: float = 30.0
-    max_data_age_seconds: float = 30.0
 
     @classmethod
     def from_env(cls) -> "PaperEngineConfig":
@@ -55,7 +57,6 @@ class PaperEngineConfig:
             signal_persist_seconds=_env_float(
                 "PAPER_SIGNAL_PERSIST_SECONDS", 30.0, minimum=5.0
             ),
-            max_data_age_seconds=_env_float("PAPER_MAX_DATA_AGE_SECONDS", 30.0, minimum=5.0),
         )
 
 
@@ -69,6 +70,10 @@ class OpenPaperPosition:
     entry_nifty: float
     opened_at: datetime
     recorded_horizons: set[int]
+    entry_direction: Direction = Direction.FLAT
+    entry_level_name: str | None = None
+    entry_level_price: float | None = None
+    best_price: float = 0.0
 
 
 def is_nse_session(now: datetime | None = None) -> bool:
@@ -79,12 +84,18 @@ def is_nse_session(now: datetime | None = None) -> bool:
     return clock_time(9, 15) <= local_time <= clock_time(15, 30)
 
 
-def paper_entry_window_open(now: datetime | None = None) -> bool:
+def paper_entry_window_open(
+    now: datetime | None = None,
+    opening_no_entry_minutes: int = 10,
+) -> bool:
     current = (now or datetime.now(timezone.utc)).astimezone(IST)
     if current.weekday() >= 5:
         return False
     local_time = current.time().replace(tzinfo=None)
-    return clock_time(9, 15) <= local_time <= clock_time(15, 15)
+    opening = datetime.combine(current.date(), clock_time(9, 15), tzinfo=IST)
+    first_entry = opening + timedelta(minutes=max(opening_no_entry_minutes, 0))
+    last_entry = datetime.combine(current.date(), clock_time(15, 15), tzinfo=IST)
+    return first_entry <= current <= last_entry and clock_time(9, 15) <= local_time <= clock_time(15, 15)
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -98,7 +109,6 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def _returned_row(response: Any, operation: str) -> dict[str, Any]:
-    """Normalize Supabase insert responses without relying on `.single()` modifiers."""
     data = getattr(response, "data", None)
     if isinstance(data, dict):
         return dict(data)
@@ -115,6 +125,45 @@ class PaperPersistence:
     def __init__(self, client: Any, account_equity: float) -> None:
         self.client = client
         self.account_equity = account_equity
+        self.parameters_updated_at: str | None = None
+
+    def load_strategy_params(self) -> StrategyParams:
+        response = (
+            self.client.table("strategy_parameters")
+            .select("key,value,updated_at")
+            .order("key")
+            .execute()
+        )
+        rows = list(response.data or [])
+        if not rows:
+            self.parameters_updated_at = None
+            return StrategyParams()
+        values = {str(row["key"]): row.get("value") for row in rows}
+        updated = [str(row.get("updated_at")) for row in rows if row.get("updated_at")]
+        self.parameters_updated_at = max(updated) if updated else None
+        return StrategyParams.from_mapping(values)
+
+    def load_constituent_config(
+        self, symbols: tuple[str, ...]
+    ) -> tuple[dict[str, float], frozenset[str], str]:
+        response = (
+            self.client.table("nifty_constituent_config")
+            .select("symbol,index_weight,is_heavyweight")
+            .in_("symbol", list(symbols))
+            .execute()
+        )
+        rows = list(response.data or [])
+        heavyweights = frozenset(
+            str(row["symbol"]) for row in rows if bool(row.get("is_heavyweight"))
+        ) or DEFAULT_HEAVYWEIGHTS
+        positive_weights = {
+            str(row["symbol"]): float(row["index_weight"])
+            for row in rows
+            if row.get("index_weight") is not None and float(row["index_weight"]) > 0
+        }
+        if len(positive_weights) == len(symbols):
+            return positive_weights, heavyweights, "database"
+        return {}, heavyweights, "equal"
 
     def load_levels(self) -> tuple[SupportResistanceLevel, ...]:
         response = (
@@ -138,6 +187,18 @@ class PaperPersistence:
     def _today_start_utc(self) -> datetime:
         local = datetime.now(IST)
         return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+    def _position_raw(self, position: OpenPaperPosition) -> dict[str, Any]:
+        return {
+            "entry_price": position.entry_price,
+            "entry_nifty": position.entry_nifty,
+            "entry_direction": position.entry_direction.value,
+            "entry_level_name": position.entry_level_name,
+            "entry_level_price": position.entry_level_price,
+            "best_price": position.best_price,
+            "exit_policy": "dynamic_scalp",
+            "recorded_horizons": sorted(position.recorded_horizons),
+        }
 
     def restore_risk_state(self) -> tuple[RiskState, OpenPaperPosition | None]:
         start = self._today_start_utc().isoformat()
@@ -175,15 +236,24 @@ class PaperPersistence:
             opened_at = _parse_datetime(open_row.get("created_at"))
             if opened_at:
                 recorded = raw.get("recorded_horizons", [])
+                direction_text = str(raw.get("entry_direction") or "flat")
+                direction = Direction(direction_text) if direction_text in {item.value for item in Direction} else Direction.FLAT
+                level_price_raw = raw.get("entry_level_price")
+                level_price = float(level_price_raw) if level_price_raw is not None else None
+                entry_price = float(raw.get("entry_price") or 0.0)
                 open_position = OpenPaperPosition(
                     order_id=str(open_row["id"]),
                     signal_id=str(open_row.get("signal_id") or ""),
                     trading_symbol=str(open_row["trading_symbol"]),
                     quantity=int(open_row["quantity"]),
-                    entry_price=float(raw.get("entry_price") or 0.0),
+                    entry_price=entry_price,
                     entry_nifty=float(raw.get("entry_nifty") or 0.0),
                     opened_at=opened_at,
                     recorded_horizons={int(value) for value in recorded},
+                    entry_direction=direction,
+                    entry_level_name=(str(raw["entry_level_name"]) if raw.get("entry_level_name") else None),
+                    entry_level_price=level_price,
+                    best_price=float(raw.get("best_price") or entry_price),
                 )
 
         state = RiskState(
@@ -216,19 +286,53 @@ class PaperPersistence:
         row = _returned_row(response, "signal insert")
         return str(row["id"])
 
-    def create_paper_order(self, signal_id: str, signal: Signal, nifty_ltp: float) -> OpenPaperPosition:
+    def write_nifty_volume_sample(self, snapshot: MarketSnapshot, signal: Signal) -> None:
+        self.client.table("nifty_volume_series").insert(
+            {
+                "observed_at": snapshot.timestamp.isoformat(),
+                "nifty_ltp": snapshot.spot_price,
+                "synthetic_vwap": snapshot.synthetic_vwap,
+                "constituent_volume_delta": signal.cash.share_volume_delta,
+                "constituent_turnover": signal.cash.turnover_delta,
+                "cash_pressure": signal.cash.pressure,
+                "breadth": signal.cash.breadth,
+                "participation": signal.cash.participation,
+                "heavyweight_score": signal.cash.heavyweight_score,
+                "futures_score": signal.futures.score,
+                "option_score": signal.option_market.score,
+                "vwap_score": signal.vwap.score,
+                "combined_score": signal.combined_direction_score,
+            }
+        ).execute()
+
+    def create_paper_order(
+        self,
+        signal_id: str,
+        signal: Signal,
+        nifty_ltp: float,
+        level_price: float | None = None,
+    ) -> OpenPaperPosition:
         contract = signal.contract.contract
         if contract is None or signal.risk.quantity <= 0:
             raise RuntimeError("cannot create a paper order without an eligible contract/quantity")
-        raw = {
-            "entry_price": contract.ltp,
-            "entry_nifty": nifty_ltp,
+        position = OpenPaperPosition(
+            order_id="",
+            signal_id=signal_id,
+            trading_symbol=contract.trading_symbol,
+            quantity=signal.risk.quantity,
+            entry_price=contract.ltp,
+            entry_nifty=nifty_ltp,
+            opened_at=signal.timestamp,
+            recorded_horizons=set(),
+            entry_direction=signal.direction,
+            entry_level_name=signal.level.level_name,
+            entry_level_price=level_price,
+            best_price=contract.ltp,
+        )
+        raw = self._position_raw(position) | {
             "signal_event": signal.event.value,
-            "signal_direction": signal.direction.value,
             "confidence": signal.confidence,
             "option_score": signal.contract.score,
-            "exit_policy": "research_15m_mark",
-            "recorded_horizons": [],
         }
         response = (
             self.client.table("orders")
@@ -247,17 +351,9 @@ class PaperPersistence:
             .execute()
         )
         row = _returned_row(response, "paper order insert")
-        opened_at = _parse_datetime(row.get("created_at")) or signal.timestamp
-        return OpenPaperPosition(
-            order_id=str(row["id"]),
-            signal_id=signal_id,
-            trading_symbol=contract.trading_symbol,
-            quantity=signal.risk.quantity,
-            entry_price=contract.ltp,
-            entry_nifty=nifty_ltp,
-            opened_at=opened_at,
-            recorded_horizons=set(),
-        )
+        position.order_id = str(row["id"])
+        position.opened_at = _parse_datetime(row.get("created_at")) or signal.timestamp
+        return position
 
     def record_outcome(
         self,
@@ -288,16 +384,9 @@ class PaperPersistence:
             on_conflict="signal_id,horizon_seconds",
         ).execute()
         position.recorded_horizons.add(horizon)
-        self.client.table("orders").update(
-            {
-                "raw": {
-                    "entry_price": position.entry_price,
-                    "entry_nifty": position.entry_nifty,
-                    "exit_policy": "research_15m_mark",
-                    "recorded_horizons": sorted(position.recorded_horizons),
-                }
-            }
-        ).eq("id", position.order_id).execute()
+        self.client.table("orders").update({"raw": self._position_raw(position)}).eq(
+            "id", position.order_id
+        ).execute()
 
     def close_paper_order(
         self,
@@ -305,11 +394,17 @@ class PaperPersistence:
         *,
         option_price: float,
         observed_at: datetime,
+        exit_reason: str,
     ) -> float:
         pnl = (option_price - position.entry_price) * position.quantity
-        self.client.table("orders").update(
-            {"status": "CLOSED"}
-        ).eq("id", position.order_id).execute()
+        raw = self._position_raw(position) | {
+            "exit_reason": exit_reason,
+            "exit_price": option_price,
+            "closed_at": observed_at.isoformat(),
+        }
+        self.client.table("orders").update({"status": "CLOSED", "raw": raw}).eq(
+            "id", position.order_id
+        ).execute()
         self.client.table("trades").insert(
             {
                 "order_id": position.order_id,
@@ -320,8 +415,10 @@ class PaperPersistence:
                 "raw": {
                     "side": "SELL",
                     "mode": "paper",
-                    "exit_policy": "research_15m_mark",
+                    "exit_policy": "dynamic_scalp",
+                    "exit_reason": exit_reason,
                     "entry_price": position.entry_price,
+                    "best_price": position.best_price,
                 },
                 "executed_at": observed_at.isoformat(),
             }
@@ -435,6 +532,7 @@ class PaperEngineRuntime:
                 )
             except Exception as exc:
                 errors.append(f"{future.trading_symbol}: {type(exc).__name__}: {exc}")
+        state.update_synthetic_vwap()
         return successes, errors
 
     def _record_position_marks(
@@ -444,14 +542,17 @@ class PaperEngineRuntime:
         chain: dict[str, Any],
         nifty_ltp: float,
         risk_state: RiskState,
-    ) -> OpenPaperPosition | None:
+        params: StrategyParams,
+        signal: Signal | None,
+    ) -> tuple[OpenPaperPosition | None, str | None]:
         if position is None:
-            return None
+            return None, None
         now = datetime.now(timezone.utc)
         age = max((now - position.opened_at).total_seconds(), 0.0)
         price = option_ltp(chain, position.trading_symbol)
         if price is None:
-            return position
+            return position, None
+        position.best_price = max(position.best_price, price)
         for horizon in OUTCOME_HORIZONS:
             if age >= horizon and horizon not in position.recorded_horizons:
                 persistence.record_outcome(
@@ -461,17 +562,32 @@ class PaperEngineRuntime:
                     nifty_ltp=nifty_ltp,
                     observed_at=now,
                 )
-        if age >= OUTCOME_HORIZONS[-1]:
-            pnl = persistence.close_paper_order(
-                position, option_price=price, observed_at=now
-            )
-            risk_state.realized_pnl_today += pnl
-            risk_state.open_position = False
-            risk_state.consecutive_losses = (
-                risk_state.consecutive_losses + 1 if pnl < 0 else 0
-            )
-            return None
-        return position
+
+        decision = evaluate_dynamic_exit(
+            now=now,
+            opened_at=position.opened_at,
+            entry_price=position.entry_price,
+            best_price=position.best_price,
+            option_price=price,
+            nifty_ltp=nifty_ltp,
+            entry_direction=position.entry_direction,
+            entry_level_price=position.entry_level_price,
+            signal=signal,
+            params=params,
+        )
+        if not decision.should_exit:
+            return position, None
+
+        pnl = persistence.close_paper_order(
+            position,
+            option_price=price,
+            observed_at=now,
+            exit_reason=decision.reason,
+        )
+        risk_state.realized_pnl_today += pnl
+        risk_state.open_position = False
+        risk_state.consecutive_losses = risk_state.consecutive_losses + 1 if pnl < 0 else 0
+        return None, decision.reason
 
     def _run_session(self) -> None:
         if self._client_factory is None:
@@ -486,8 +602,10 @@ class PaperEngineRuntime:
         expiry = registry.nearest_nifty_option_expiry()
         feed = GrowwLiveFeed(groww, constituents, index, future)
         state = LiveMarketState()
-        engine = SignalEngine()
         persistence = PaperPersistence(self.control.client, self.config.account_equity)
+        params = persistence.load_strategy_params()
+        index_weights, heavyweights, weighting = persistence.load_constituent_config(universe.symbols)
+        engine = SignalEngine(params)
         risk_state, open_position = persistence.restore_risk_state()
         limiter = SlidingWindowRateLimiter(max_per_second=8, max_per_minute=220)
         feed.start()
@@ -497,20 +615,27 @@ class PaperEngineRuntime:
             state="warming",
             feed_connected=True,
             universe_as_of=universe.as_of,
-            weighting="equal",
+            weighting=weighting,
             constituents_total=50,
             constituents_resolved=len(constituents),
             constituents_fresh=0,
             future_symbol=future.trading_symbol,
             future_ltp=None,
             nifty_ltp=None,
+            synthetic_vwap=None,
+            whole_nifty_volume_delta=0,
+            whole_nifty_turnover=0.0,
             option_expiry=expiry,
             option_contract_count=0,
+            thresholds_updated_at=persistence.parameters_updated_at,
+            opening_no_entry_minutes=params.opening_no_entry_minutes,
+            last_exit_reason=None,
             open_paper_position=(
                 {
                     "trading_symbol": open_position.trading_symbol,
                     "quantity": open_position.quantity,
                     "opened_at": open_position.opened_at.isoformat(),
+                    "best_price": open_position.best_price,
                 }
                 if open_position
                 else None
@@ -519,8 +644,10 @@ class PaperEngineRuntime:
 
         next_quote = 0.0
         next_option = 0.0
+        next_param_refresh = time.monotonic() + PARAM_REFRESH_SECONDS
         last_signal_persist = 0.0
         latest_chain: dict[str, Any] = {}
+        latest_signal: Signal | None = None
         try:
             while not self._stop_event.is_set() and is_nse_session():
                 loop_started = time.monotonic()
@@ -528,8 +655,7 @@ class PaperEngineRuntime:
                 if feed_snapshot.spot:
                     spot_age = max(
                         (
-                            datetime.now(timezone.utc)
-                            - feed_snapshot.spot.observed_at
+                            datetime.now(timezone.utc) - feed_snapshot.spot.observed_at
                         ).total_seconds(),
                         0.0,
                     )
@@ -540,6 +666,17 @@ class PaperEngineRuntime:
                     )
 
                 now_mono = time.monotonic()
+                if now_mono >= next_param_refresh:
+                    refreshed = persistence.load_strategy_params()
+                    if refreshed != params:
+                        params = refreshed
+                        engine.update_params(params)
+                    next_param_refresh = now_mono + PARAM_REFRESH_SECONDS
+                    self._set_status(
+                        thresholds_updated_at=persistence.parameters_updated_at,
+                        opening_no_entry_minutes=params.opening_no_entry_minutes,
+                    )
+
                 did_quote_scan = False
                 if now_mono >= next_quote:
                     successes, quote_errors = self._quote_scan(
@@ -580,22 +717,28 @@ class PaperEngineRuntime:
                             datetime.now(timezone.utc),
                             0.0,
                         )
+                    last_exit_reason = None
                     if open_position and latest_chain:
-                        open_position = self._record_position_marks(
+                        open_position, last_exit_reason = self._record_position_marks(
                             persistence,
                             open_position,
                             latest_chain,
                             state.spot_price or chain_spot,
                             risk_state,
+                            params,
+                            latest_signal,
                         )
                     self._set_status(
                         last_option_refresh=datetime.now(timezone.utc).isoformat(),
                         option_contract_count=len(contracts),
+                        last_exit_reason=last_exit_reason,
                     )
 
                 if did_quote_scan and not self._stop_event.is_set():
                     built = state.build_snapshot(
-                        max_age_seconds=self.config.max_data_age_seconds
+                        max_age_seconds=params.max_data_age_seconds,
+                        index_weights=index_weights,
+                        heavyweights=heavyweights,
                     )
                     if built is not None:
                         snapshot, data_age = built
@@ -606,6 +749,21 @@ class PaperEngineRuntime:
                             risk_state,
                             data_age_seconds=data_age,
                         )
+                        latest_signal = signal
+                        persistence.write_nifty_volume_sample(snapshot, signal)
+
+                        last_exit_reason = None
+                        if open_position and latest_chain:
+                            open_position, last_exit_reason = self._record_position_marks(
+                                persistence,
+                                open_position,
+                                latest_chain,
+                                snapshot.spot_price,
+                                risk_state,
+                                params,
+                                signal,
+                            )
+
                         actionable = signal.event.value in {"breakout", "reversal"}
                         should_persist = (
                             actionable
@@ -622,10 +780,24 @@ class PaperEngineRuntime:
                             signal_id
                             and signal.risk.allowed
                             and open_position is None
-                            and paper_entry_window_open(signal.timestamp)
+                            and paper_entry_window_open(
+                                signal.timestamp,
+                                params.opening_no_entry_minutes,
+                            )
                         ):
+                            level_price = next(
+                                (
+                                    level.price
+                                    for level in levels
+                                    if level.name == signal.level.level_name
+                                ),
+                                None,
+                            )
                             open_position = persistence.create_paper_order(
-                                signal_id, signal, snapshot.spot_price
+                                signal_id,
+                                signal,
+                                snapshot.spot_price,
+                                level_price,
                             )
                             risk_state.open_position = True
                             risk_state.trades_today += 1
@@ -635,11 +807,23 @@ class PaperEngineRuntime:
                         self._set_status(
                             state="running",
                             constituents_fresh=state.fresh_constituent_count(
-                                max_age_seconds=self.config.max_data_age_seconds
+                                max_age_seconds=params.max_data_age_seconds
                             ),
                             nifty_ltp=snapshot.spot_price,
+                            synthetic_vwap=snapshot.synthetic_vwap,
+                            whole_nifty_volume_delta=signal.cash.share_volume_delta,
+                            whole_nifty_turnover=signal.cash.turnover_delta,
+                            heavyweight_score=signal.cash.heavyweight_score,
+                            cash_pressure=signal.cash.pressure,
+                            breadth=signal.cash.breadth,
+                            participation=signal.cash.participation,
                             future_ltp=snapshot.futures.price,
+                            option_direction_score=signal.option_market.score,
+                            option_direction_ready=signal.option_market.ready,
+                            vwap_score=signal.vwap.score,
+                            combined_direction_score=signal.combined_direction_score,
                             data_age_seconds=round(data_age, 3),
+                            last_exit_reason=last_exit_reason,
                             last_signal={
                                 "event": signal.event.value,
                                 "direction": signal.direction.value,
@@ -653,10 +837,12 @@ class PaperEngineRuntime:
                                     "trading_symbol": open_position.trading_symbol,
                                     "quantity": open_position.quantity,
                                     "entry_price": open_position.entry_price,
+                                    "best_price": open_position.best_price,
+                                    "entry_direction": open_position.entry_direction.value,
+                                    "entry_level_name": open_position.entry_level_name,
+                                    "entry_level_price": open_position.entry_level_price,
                                     "opened_at": open_position.opened_at.isoformat(),
-                                    "marks_recorded": sorted(
-                                        open_position.recorded_horizons
-                                    ),
+                                    "marks_recorded": sorted(open_position.recorded_horizons),
                                 }
                                 if open_position
                                 else None
@@ -666,15 +852,14 @@ class PaperEngineRuntime:
                         self._set_status(
                             state="warming",
                             constituents_fresh=state.fresh_constituent_count(
-                                max_age_seconds=self.config.max_data_age_seconds
+                                max_age_seconds=params.max_data_age_seconds
                             ),
                             nifty_ltp=state.spot_price or None,
+                            synthetic_vwap=state.synthetic_vwap,
                         )
 
                 elapsed = time.monotonic() - loop_started
-                self._stop_event.wait(
-                    max(self.config.feed_poll_seconds - elapsed, 0.05)
-                )
+                self._stop_event.wait(max(self.config.feed_poll_seconds - elapsed, 0.05))
         finally:
             feed.stop()
             self._set_status(feed_connected=False)

@@ -39,6 +39,7 @@ class ConstituentTick:
     previous_volume_rate: float
     seconds_elapsed: float
     index_weight: float = 1.0
+    is_heavyweight: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +101,9 @@ class CashMetrics:
     active_count: int
     advancers: int
     decliners: int
+    heavyweight_score: float = 0.0
+    share_volume_delta: int = 0
+    turnover_delta: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +113,28 @@ class FuturesMetrics:
     oi_confirmation: float
     basis_change: float
     score: float
+
+
+@dataclass(frozen=True, slots=True)
+class OptionMarketMetrics:
+    score: float = 0.0
+    volume_imbalance: float = 0.0
+    oi_change_imbalance: float = 0.0
+    iv_skew: float = 0.0
+    call_volume_delta: int = 0
+    put_volume_delta: int = 0
+    call_oi_delta: int = 0
+    put_oi_delta: int = 0
+    contracts_used: int = 0
+    ready: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class VwapMetrics:
+    synthetic_vwap: float | None = None
+    distance_bps: float = 0.0
+    score: float = 0.0
+    ready: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +173,7 @@ class MarketSnapshot:
     constituents: tuple[ConstituentTick, ...]
     futures: FuturesTick
     options: tuple[OptionContract, ...] = field(default_factory=tuple)
+    synthetic_vwap: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,3 +189,5 @@ class Signal:
     contract: ContractSelection
     risk: RiskDecision
     reasons: tuple[str, ...]
+    option_market: OptionMarketMetrics = field(default_factory=OptionMarketMetrics)
+    vwap: VwapMetrics = field(default_factory=VwapMetrics)

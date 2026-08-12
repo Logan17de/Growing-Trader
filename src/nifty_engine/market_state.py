@@ -2,9 +2,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from .models import ConstituentTick, FuturesTick, MarketSnapshot, OptionContract
+
+
+# Apr-2026 NIFTY factsheet top-ten membership. The symbols are configuration context,
+# not a claim that these weights stay constant; DB-backed index weights can override
+# the numeric contribution while this set exposes the explicit heavyweight feature.
+DEFAULT_HEAVYWEIGHTS = frozenset(
+    {
+        "HDFCBANK",
+        "RELIANCE",
+        "ICICIBANK",
+        "BHARTIARTL",
+        "LT",
+        "SBIN",
+        "INFY",
+        "AXISBANK",
+        "ITC",
+        "KOTAKBANK",
+    }
+)
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -29,6 +48,8 @@ class QuoteWindow:
     updated_at: datetime | None = None
     seconds_elapsed: float = 1.0
     samples: int = 0
+    last_delta_volume: int = 0
+    last_turnover: float = 0.0
 
     def update(self, quote: dict[str, Any], at: datetime) -> None:
         price = _num(quote.get("last_price"), self.price)
@@ -44,6 +65,8 @@ class QuoteWindow:
             self.previous_open_interest = _num(previous_oi, oi)
             self.updated_at = at
             self.samples = 1
+            self.last_delta_volume = 0
+            self.last_turnover = 0.0
             return
 
         elapsed = max((at - self.updated_at).total_seconds(), 0.001)
@@ -66,6 +89,8 @@ class QuoteWindow:
                 1e-6,
             )
         self.last_volume_rate = max(rate, 1e-6)
+        self.last_delta_volume = delta_volume
+        self.last_turnover = delta_volume * max(price, 0.0)
         self.updated_at = at
         self.samples += 1
 
@@ -85,6 +110,9 @@ class LiveMarketState:
         self.feed_age_seconds = float("inf")
         self.options: tuple[OptionContract, ...] = ()
         self.options_updated_at: datetime | None = None
+        self.synthetic_vwap: float | None = None
+        self._vwap_turnover = 0.0
+        self._vwap_price_turnover = 0.0
 
     def update_feed_spot(self, price: float, observed_at: datetime, feed_age_seconds: float) -> None:
         if price <= 0:
@@ -104,6 +132,28 @@ class LiveMarketState:
             self.future = QuoteWindow(symbol)
         self.future.update(quote, at)
 
+    def update_synthetic_vwap(self) -> None:
+        """Update a NIFTY-price VWAP using the 50-stock interval turnover as activity weight."""
+        if self.spot_price <= 0:
+            return
+        interval_turnover = sum(item.last_turnover for item in self.constituents.values())
+        if interval_turnover <= 0:
+            return
+        self._vwap_turnover += interval_turnover
+        self._vwap_price_turnover += self.spot_price * interval_turnover
+        self.synthetic_vwap = self._vwap_price_turnover / self._vwap_turnover
+
+    def update_baselines(self, baselines: Mapping[tuple[str, int], float], minute_bucket: int) -> None:
+        """Apply prior-session minute-of-day baselines when available."""
+        for symbol, item in self.constituents.items():
+            baseline = baselines.get((symbol, minute_bucket))
+            if baseline is not None and baseline > 0:
+                item.baseline_volume_rate = baseline
+        if self.future is not None:
+            baseline = baselines.get((self.future.symbol, minute_bucket))
+            if baseline is not None and baseline > 0:
+                self.future.baseline_volume_rate = baseline
+
     def set_options(self, contracts: tuple[OptionContract, ...], at: datetime) -> None:
         self.options = contracts
         self.options_updated_at = at
@@ -113,10 +163,13 @@ class LiveMarketState:
         *,
         now: datetime | None = None,
         max_age_seconds: float = 30.0,
+        index_weights: Mapping[str, float] | None = None,
+        heavyweights: frozenset[str] | set[str] | None = None,
     ) -> tuple[MarketSnapshot, float] | None:
         now = now or datetime.now(timezone.utc)
         fresh = [
-            item for item in self.constituents.values()
+            item
+            for item in self.constituents.values()
             if item.samples >= 2 and item.age(now) <= max_age_seconds
         ]
         if len(fresh) < 45 or self.future is None or self.future.samples < 2:
@@ -124,6 +177,8 @@ class LiveMarketState:
         if self.future.age(now) > max_age_seconds or self.spot_updated_at is None:
             return None
 
+        weights = index_weights or {}
+        heavyweight_symbols = heavyweights if heavyweights is not None else DEFAULT_HEAVYWEIGHTS
         ticks = tuple(
             ConstituentTick(
                 symbol=item.symbol,
@@ -134,7 +189,8 @@ class LiveMarketState:
                 baseline_volume_rate=item.baseline_volume_rate,
                 previous_volume_rate=item.previous_volume_rate,
                 seconds_elapsed=item.seconds_elapsed,
-                index_weight=1.0,
+                index_weight=max(float(weights.get(item.symbol, 1.0)), 0.0),
+                is_heavyweight=item.symbol in heavyweight_symbols,
             )
             for item in fresh
         )
@@ -164,6 +220,7 @@ class LiveMarketState:
             constituents=ticks,
             futures=future,
             options=self.options,
+            synthetic_vwap=self.synthetic_vwap,
         )
         self.previous_spot_price = self.spot_price
         return snapshot, data_age
@@ -173,6 +230,7 @@ class LiveMarketState:
     ) -> int:
         now = now or datetime.now(timezone.utc)
         return sum(
-            1 for item in self.constituents.values()
+            1
+            for item in self.constituents.values()
             if item.samples >= 2 and item.age(now) <= max_age_seconds
         )

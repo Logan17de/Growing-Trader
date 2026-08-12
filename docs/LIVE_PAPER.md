@@ -1,6 +1,6 @@
 # Live paper engine
 
-The Oracle worker now owns two processes inside one service:
+The Oracle worker owns two processes inside one service:
 
 1. the control agent, which stays online and polls Supabase commands;
 2. a startable live paper engine, controlled from the Vercel dashboard.
@@ -22,8 +22,12 @@ Groww Live Data REST
 
 Oracle
   -> LiveMarketState
+  -> cash pressure / breadth / participation / heavyweight confirmation
+  -> futures confirmation
+  -> experimental near-ATM option activity confirmation
+  -> synthetic NIFTY VWAP confirmation
   -> SignalEngine
-  -> Supabase signals
+  -> Supabase signals + NIFTY aggregate-volume series
   -> paper-only orders/trades/outcome marks
 ```
 
@@ -34,23 +38,63 @@ Default cadence:
 - feed poll: 1 second
 - quote scan: 20 seconds after each completed scan
 - option-chain refresh: 20 seconds
+- strategy-parameter refresh from Supabase: 30 seconds
 - non-actionable signal persistence: at most once per 30 seconds
 
 The REST limiter is configured below Groww's published Live Data limits.
 
-## Paper order research protocol
+## Full strategy inputs
 
-An actionable signal still has to pass the existing risk engine. If it passes during 09:15–15:15 IST, the runner creates a database-only `OPEN` paper order using the option-chain LTP. It records marks after:
+The paper direction score now contains the full research set discussed for this strategy:
 
-- 1 minute
-- 3 minutes
-- 5 minutes
-- 10 minutes
-- 15 minutes
+- NIFTY constituent relative activity, price direction, breadth and participation;
+- explicit heavyweight confirmation;
+- NIFTY futures price/activity, OI confirmation and basis change;
+- low-weight experimental near-ATM option-chain activity from incremental CE/PE volume, OI change and IV skew;
+- a synthetic NIFTY VWAP built from NIFTY spot observations weighted by aggregate constituent turnover.
 
-At the 15-minute mark the research position is closed at the then-current option-chain LTP. This is a measurement policy, not a claim that 15 minutes is an optimal trading exit.
+The option activity feature is a research hypothesis, not an assertion about buyer/seller identity. Greeks still primarily select the option contract after direction is decided.
 
-No new research entries are created after 15:15 IST so the full 15-minute mark can occur before the normal 15:30 close.
+## DB-backed thresholds
+
+Migration `202608120005_full_strategy_observability.sql` creates `strategy_parameters` and seeds every `StrategyParams` value: formula weights, breakout/reversal thresholds, option filters, entry timing, dynamic exits and risk limits.
+
+The Oracle runner reloads the table every 30 seconds. `StrategyParams` validation is applied after each reload, so invalid weight groups or invalid ranges fail closed rather than silently becoming active.
+
+The same migration adds `nifty_constituent_config`. Real index weights can be populated there. The runner uses DB index weights only if the complete configured NIFTY universe has positive weights; otherwise it remains explicitly equal-weighted rather than mixing partial real weights with defaults.
+
+## Aggregate NIFTY-50 volume research series
+
+`nifty_volume_series` stores one observation after each valid quote scan:
+
+- NIFTY LTP and synthetic VWAP;
+- summed incremental share volume across the 50 constituents;
+- summed constituent turnover (`delta volume * stock price`);
+- cash pressure, breadth, participation and heavyweight score;
+- futures, option-activity, VWAP and combined direction scores.
+
+This is intentionally called a synthetic NIFTY-50 constituent aggregate. It is not exchange-reported volume for the NIFTY index itself.
+
+Migration `202608120006_nifty_volume_minute_view.sql` aggregates those scan rows into one minute buckets so `/strategy` can chart the full session without bloating the main control-plane heartbeat response.
+
+The Vercel research view is available at `/strategy` and displays the full-session aggregate chart plus every DB-backed threshold.
+
+## Entry timing
+
+The opening market is collected from 09:15 IST, but new entries are blocked for `opening_no_entry_minutes` (default 10). With defaults, the first possible paper entry is 09:25 IST. New entries still stop at 15:15 IST.
+
+## Dynamic paper scalp exits
+
+An open research position can now close before 15 minutes for:
+
+- option-premium stop loss;
+- option-premium profit target;
+- trailing stop after a configured profit activation;
+- material cross-market pressure flip against the entry direction;
+- adverse failure back through the entry support/resistance level;
+- maximum holding time.
+
+The existing 1/3/5/10/15-minute outcome marks are retained whenever a position survives to those horizons. Exit values are research defaults and are expected to be calibrated from paper observations rather than treated as profitable constants.
 
 ## Safety
 
@@ -58,16 +102,12 @@ No new research entries are created after 15:15 IST so the full 15-minute mark c
 - There is no Groww `place_order` call in the live runner.
 - One paper position at a time.
 - Existing daily-loss, trade-count, loss-streak, stale-data and cooldown vetoes remain active.
-- Fewer than 45 fresh constituent quotes blocks risk.
+- Fewer than the DB-configured minimum fresh constituent quotes blocks risk.
 - Outside NSE session hours the engine waits without quote/option REST polling.
-
-## Current weighting limitation
-
-`config/nifty50.symbols.json` supplies the current bootstrap constituent list, but V1 uses equal constituent weights in the cash score. NIFTY is a free-float market-cap weighted index, so proper time-varying index weights should be added before treating this score as production-grade.
 
 ## Deploy
 
-Apply `supabase/migrations/202608120004_live_paper_engine.sql` before starting the new worker code.
+Apply migrations in order through `202608120006_nifty_volume_minute_view.sql`.
 
 Then update Oracle:
 

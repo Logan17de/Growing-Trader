@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,8 +12,9 @@ class StrategyParams:
     # Cash/constituent normalisation
     direction_scale_bps: float = 8.0
     rvol_cap: float = 4.0
-    cash_pressure_weight: float = 0.75
-    breadth_weight: float = 0.25
+    cash_pressure_weight: float = 0.65
+    breadth_weight: float = 0.20
+    heavyweight_weight: float = 0.15
     participation_floor: float = 0.55
     min_constituents: int = 45
 
@@ -25,9 +26,23 @@ class StrategyParams:
     futures_oi_scale_pct: float = 0.35
     futures_basis_scale_bps: float = 4.0
 
+    # Experimental option-chain directional confirmation. These are intentionally
+    # low-weight because aggregate option OI/volume does not reveal buyer/seller identity.
+    option_direction_volume_weight: float = 0.45
+    option_direction_oi_weight: float = 0.40
+    option_direction_iv_weight: float = 0.15
+    option_iv_skew_scale_pct: float = 2.0
+    option_near_atm_strikes: int = 5
+
+    # Synthetic NIFTY VWAP confirmation. The live runner builds a NIFTY-price VWAP
+    # weighted by constituent turnover between quote scans; it is not an exchange VWAP.
+    vwap_direction_scale_bps: float = 8.0
+
     # Combined market score
-    combined_cash_weight: float = 0.60
-    combined_futures_weight: float = 0.40
+    combined_cash_weight: float = 0.50
+    combined_futures_weight: float = 0.30
+    combined_options_weight: float = 0.10
+    combined_vwap_weight: float = 0.10
 
     # Level-event classification
     level_watch_distance_bps: float = 35.0
@@ -60,6 +75,20 @@ class StrategyParams:
     option_gamma_weight: float = 0.10
     max_spread_pct: float = 0.02
 
+    # Entry timing. The opening auction/price-discovery period is collected but cannot
+    # create a new paper entry until this many minutes after the 09:15 IST open.
+    opening_no_entry_minutes: int = 10
+
+    # Dynamic scalp exits. Percentage values are decimal returns on the option premium.
+    exit_min_hold_seconds: int = 60
+    exit_profit_target_pct: float = 0.15
+    exit_stop_loss_pct: float = 0.08
+    exit_trailing_activation_pct: float = 0.10
+    exit_trailing_drawdown_pct: float = 0.05
+    exit_signal_flip_threshold: float = 0.20
+    exit_level_failure_bps: float = 8.0
+    exit_max_hold_seconds: int = 900
+
     # Risk controls (hypothesis defaults; tune from paper results)
     risk_per_trade_pct: float = 0.005
     daily_loss_limit_pct: float = 0.02
@@ -76,12 +105,15 @@ class StrategyParams:
             "futures_direction_scale_bps": self.futures_direction_scale_bps,
             "futures_oi_scale_pct": self.futures_oi_scale_pct,
             "futures_basis_scale_bps": self.futures_basis_scale_bps,
+            "option_iv_skew_scale_pct": self.option_iv_skew_scale_pct,
+            "vwap_direction_scale_bps": self.vwap_direction_scale_bps,
             "level_watch_distance_bps": self.level_watch_distance_bps,
             "level_touch_tolerance_bps": self.level_touch_tolerance_bps,
             "breakout_penetration_bps": self.breakout_penetration_bps,
             "rejection_depth_bps": self.rejection_depth_bps,
             "persistence_target_seconds": self.persistence_target_seconds,
             "level_touch_memory_seconds": self.level_touch_memory_seconds,
+            "exit_level_failure_bps": self.exit_level_failure_bps,
         }
         for name, value in positive.items():
             if not math.isfinite(value) or value <= 0:
@@ -96,6 +128,11 @@ class StrategyParams:
             "min_abs_delta": self.min_abs_delta,
             "max_abs_delta": self.max_abs_delta,
             "max_spread_pct": self.max_spread_pct,
+            "exit_profit_target_pct": self.exit_profit_target_pct,
+            "exit_stop_loss_pct": self.exit_stop_loss_pct,
+            "exit_trailing_activation_pct": self.exit_trailing_activation_pct,
+            "exit_trailing_drawdown_pct": self.exit_trailing_drawdown_pct,
+            "exit_signal_flip_threshold": self.exit_signal_flip_threshold,
             "risk_per_trade_pct": self.risk_per_trade_pct,
             "daily_loss_limit_pct": self.daily_loss_limit_pct,
             "min_signal_confidence": self.min_signal_confidence,
@@ -107,21 +144,43 @@ class StrategyParams:
             raise ValueError("rvol_cap must be > 1")
         if self.min_constituents <= 0:
             raise ValueError("min_constituents must be positive")
+        if self.option_near_atm_strikes <= 0:
+            raise ValueError("option_near_atm_strikes must be positive")
         if not self.min_abs_delta <= self.target_abs_delta <= self.max_abs_delta:
             raise ValueError("target_abs_delta must be inside the configured delta band")
         if self.max_trades_per_day <= 0 or self.max_consecutive_losses <= 0:
             raise ValueError("daily/consecutive trade limits must be positive")
+        if self.opening_no_entry_minutes < 0:
+            raise ValueError("opening_no_entry_minutes cannot be negative")
+        if self.exit_min_hold_seconds < 0 or self.exit_max_hold_seconds <= 0:
+            raise ValueError("exit hold times are invalid")
+        if self.exit_min_hold_seconds >= self.exit_max_hold_seconds:
+            raise ValueError("exit_min_hold_seconds must be below exit_max_hold_seconds")
         if self.cooldown_seconds < 0 or self.max_data_age_seconds < 0:
             raise ValueError("time limits cannot be negative")
 
         groups = {
-            "cash": (self.cash_pressure_weight, self.breadth_weight),
+            "cash": (
+                self.cash_pressure_weight,
+                self.breadth_weight,
+                self.heavyweight_weight,
+            ),
             "futures": (
                 self.futures_price_weight,
                 self.futures_oi_weight,
                 self.futures_basis_weight,
             ),
-            "combined": (self.combined_cash_weight, self.combined_futures_weight),
+            "option_direction": (
+                self.option_direction_volume_weight,
+                self.option_direction_oi_weight,
+                self.option_direction_iv_weight,
+            ),
+            "combined": (
+                self.combined_cash_weight,
+                self.combined_futures_weight,
+                self.combined_options_weight,
+                self.combined_vwap_weight,
+            ),
             "level": (
                 self.level_direction_weight,
                 self.level_distance_weight,
@@ -151,6 +210,24 @@ class StrategyParams:
     def from_json(cls, path: str | Path) -> "StrategyParams":
         raw: dict[str, Any] = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(**raw)
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, Any]) -> "StrategyParams":
+        """Build params from DB/config values while ignoring unknown future keys."""
+        defaults = cls()
+        known = {item.name: item for item in fields(cls)}
+        converted: dict[str, Any] = {}
+        for key, raw in values.items():
+            if key not in known or raw is None:
+                continue
+            default = getattr(defaults, key)
+            if isinstance(default, bool):
+                converted[key] = bool(raw)
+            elif isinstance(default, int):
+                converted[key] = int(float(raw))
+            else:
+                converted[key] = float(raw)
+        return cls(**converted)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
