@@ -70,3 +70,55 @@ def test_idle_poll_keeps_agent_running() -> None:
     assert agent.run_once() is True
     assert agent.state == "idle"
     assert control.heartbeats[-1]["state"] == "idle"
+
+
+class FakeForbiddenError(Exception):
+    code = "GA005"
+    msg = "Access forbidden for this request."
+
+
+class FakeForbiddenGroww:
+    EXCHANGE_NSE = "NSE"
+    SEGMENT_CASH = "CASH"
+
+    def get_holdings_for_user(self) -> dict[str, Any]:
+        return {"holdings": []}
+
+    def get_positions_for_user(self) -> dict[str, Any]:
+        return {"positions": []}
+
+    def get_ltp(self, **_: Any) -> dict[str, Any]:
+        raise FakeForbiddenError("Access forbidden for this request.")
+
+    def get_quote(self, **_: Any) -> dict[str, Any]:
+        raise FakeForbiddenError("Access forbidden for this request.")
+
+    def get_ohlc(self, **_: Any) -> dict[str, Any]:
+        raise FakeForbiddenError("Access forbidden for this request.")
+
+    def get_expiries(self, **_: Any) -> dict[str, Any]:
+        return {"expiries": ["2099-01-01"]}
+
+    def get_option_chain(self, **_: Any) -> dict[str, Any]:
+        raise FakeForbiddenError("Access forbidden for this request.")
+
+
+def test_market_diagnostic_completes_and_captures_groww_error_code() -> None:
+    control = FakeControlPlane([{"id": "cmd-2", "command": "TEST_MARKET_DATA"}])
+    agent = OracleControlAgent(control, poll_seconds=0.01)  # type: ignore[arg-type]
+    fake_groww = FakeForbiddenGroww()
+    agent._groww_client = lambda: (  # type: ignore[method-assign]
+        fake_groww,
+        {"nse_enabled": True, "active_segments": ["CASH", "FNO"]},
+    )
+
+    assert agent.run_once() is True
+    command_id, result, error = control.completed[-1]
+    assert command_id == "cmd-2"
+    assert error is None
+    assert result is not None
+    assert result["classification"] == "forbidden"
+    assert result["diagnostic"]["live_data"]["nifty_ltp"]["code"] == "GA005"
+    assert result["diagnostic"]["non_trading"]["holdings"]["ok"] is True
+    assert agent.market_data_status == "forbidden"
+    assert "Live Data" in result["conclusion"]
