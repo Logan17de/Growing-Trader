@@ -89,16 +89,31 @@ def _records(frame: Any) -> list[dict[str, Any]]:
     raise RuntimeError("Groww instrument master did not return a DataFrame/list-like payload")
 
 
+def _market_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        _clean(row.get("exchange")).upper(),
+        _clean(row.get("segment")).upper(),
+        _clean(row.get("trading_symbol")).upper(),
+    )
+
+
 class InstrumentRegistry:
     def __init__(self, groww: Any, *, today: date | None = None) -> None:
         self.groww = groww
         self.today = today or date.today()
         self.rows = _records(groww.get_all_instruments())
-        self._by_symbol = {
-            _clean(row.get("trading_symbol")).upper(): row
-            for row in self.rows
-            if _clean(row.get("trading_symbol"))
-        }
+
+        # trading_symbol alone is not unique: the same cash equity can appear on both
+        # NSE and BSE. Key the primary lookup by exchange + segment + symbol so a later
+        # BSE row cannot overwrite the NSE row used by the NIFTY strategy.
+        self._by_market_symbol: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._rows_by_symbol: dict[str, list[dict[str, Any]]] = {}
+        for row in self.rows:
+            symbol = _clean(row.get("trading_symbol")).upper()
+            if not symbol:
+                continue
+            self._by_market_symbol[_market_key(row)] = row
+            self._rows_by_symbol.setdefault(symbol, []).append(row)
 
     @staticmethod
     def _ref(row: dict[str, Any]) -> InstrumentRef:
@@ -117,16 +132,12 @@ class InstrumentRegistry:
         resolved: list[InstrumentRef] = []
         missing: list[str] = []
         for symbol in symbols:
-            name = str(symbol).upper()
-            row = self._by_symbol.get(name)
-            if not row:
+            name = str(symbol).strip().upper()
+            row = self._by_market_symbol.get(("NSE", "CASH", name))
+            if row is None:
                 missing.append(name)
                 continue
-            ref = self._ref(row)
-            if ref.exchange != "NSE" or ref.segment != "CASH":
-                missing.append(name)
-                continue
-            resolved.append(ref)
+            resolved.append(self._ref(row))
         if len(resolved) < 45:
             raise RuntimeError(
                 f"only {len(resolved)} NIFTY constituents resolved from instrument master; "
@@ -135,21 +146,17 @@ class InstrumentRegistry:
         return tuple(resolved)
 
     def nifty_index(self) -> InstrumentRef:
-        for row in self.rows:
-            if (
-                _clean(row.get("exchange")).upper() == "NSE"
-                and _clean(row.get("segment")).upper() == "CASH"
-                and _clean(row.get("trading_symbol")).upper() == "NIFTY"
-            ):
-                ref = self._ref(row)
-                return InstrumentRef(
-                    exchange=ref.exchange,
-                    segment=ref.segment,
-                    exchange_token="NIFTY",
-                    trading_symbol="NIFTY",
-                    instrument_type=ref.instrument_type or "INDEX",
-                    lot_size=1,
-                )
+        row = self._by_market_symbol.get(("NSE", "CASH", "NIFTY"))
+        if row is not None:
+            ref = self._ref(row)
+            return InstrumentRef(
+                exchange=ref.exchange,
+                segment=ref.segment,
+                exchange_token=ref.exchange_token or "NIFTY",
+                trading_symbol="NIFTY",
+                instrument_type=ref.instrument_type or "INDEX",
+                lot_size=1,
+            )
         return InstrumentRef("NSE", "CASH", "NIFTY", "NIFTY", "INDEX", 1)
 
     def nearest_nifty_future(self) -> InstrumentRef:
@@ -187,5 +194,21 @@ class InstrumentRegistry:
         return min(expiries)
 
     def lot_size_for(self, trading_symbol: str, default: int = 1) -> int:
-        row = self._by_symbol.get(trading_symbol.upper())
-        return _to_int(row.get("lot_size"), default) if row else default
+        rows = self._rows_by_symbol.get(trading_symbol.strip().upper(), [])
+        if not rows:
+            return default
+        preferred = next(
+            (
+                row
+                for row in rows
+                if _clean(row.get("exchange")).upper() == "NSE"
+                and _clean(row.get("segment")).upper() == "FNO"
+            ),
+            None,
+        )
+        if preferred is None:
+            preferred = next(
+                (row for row in rows if _clean(row.get("exchange")).upper() == "NSE"),
+                rows[0],
+            )
+        return _to_int(preferred.get("lot_size"), default)

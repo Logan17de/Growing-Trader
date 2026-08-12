@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from nifty_engine.instrument_registry import InstrumentRegistry
 from nifty_engine.live_control import LiveOracleControlAgent
 from nifty_engine.market_state import LiveMarketState
 from nifty_engine.option_chain import parse_option_chain
@@ -55,6 +56,44 @@ def test_option_chain_parser_builds_ce_and_pe_contracts() -> None:
     assert {item.trading_symbol for item in contracts} == {"NIFTY-DEMO-CE", "NIFTY-DEMO-PE"}
     assert all(item.lot_size == 65 for item in contracts)
     assert sorted(item.greeks.delta for item in contracts) == [-0.52, 0.55]
+
+
+def test_instrument_registry_keeps_nse_cash_row_when_bse_duplicate_comes_later() -> None:
+    symbols = tuple(f"STOCK{index}" for index in range(45))
+    rows: list[dict[str, Any]] = []
+    for index, symbol in enumerate(symbols):
+        rows.extend(
+            [
+                {
+                    "exchange": "NSE",
+                    "segment": "CASH",
+                    "exchange_token": str(1000 + index),
+                    "trading_symbol": symbol,
+                    "instrument_type": "EQ",
+                    "lot_size": 1,
+                },
+                {
+                    "exchange": "BSE",
+                    "segment": "CASH",
+                    "exchange_token": str(2000 + index),
+                    "trading_symbol": symbol,
+                    "instrument_type": "EQ",
+                    "lot_size": 1,
+                },
+            ]
+        )
+
+    class FakeGroww:
+        def get_all_instruments(self) -> list[dict[str, Any]]:
+            return rows
+
+    registry = InstrumentRegistry(FakeGroww())
+    resolved = registry.resolve_constituents(symbols)
+
+    assert len(resolved) == 45
+    assert all(item.exchange == "NSE" for item in resolved)
+    assert all(item.segment == "CASH" for item in resolved)
+    assert [item.exchange_token for item in resolved[:2]] == ["1000", "1001"]
 
 
 def test_market_state_builds_snapshot_after_two_quote_scans() -> None:
