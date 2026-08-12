@@ -49,13 +49,14 @@ def paper_demo() -> None:
 
 
 def control_agent() -> None:
-    from .control_plane import OracleControlAgent, SupabaseControlPlane
+    from .control_plane import SupabaseControlPlane
+    from .live_control import LiveOracleControlAgent
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    OracleControlAgent(SupabaseControlPlane.from_env()).run_forever()
+    LiveOracleControlAgent(SupabaseControlPlane.from_env()).run_forever()
 
 
 def main() -> None:
