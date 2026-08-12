@@ -1,5 +1,10 @@
 import { cookies } from "next/headers";
-import { DASHBOARD_COOKIE, dashboardPasswordMatches, expectedSessionValue } from "@/lib/dashboardAuth";
+import {
+  createSessionValue,
+  DASHBOARD_COOKIE,
+  DASHBOARD_SESSION_MAX_AGE_SECONDS,
+  dashboardPasswordMatches,
+} from "@/lib/dashboardAuth";
 
 export async function POST(request: Request) {
   let body: { password?: string };
@@ -12,12 +17,12 @@ export async function POST(request: Request) {
     return Response.json({ error: "invalid password" }, { status: 401 });
   }
   const store = await cookies();
-  store.set(DASHBOARD_COOKIE, expectedSessionValue(), {
+  store.set(DASHBOARD_COOKIE, createSessionValue(), {
     httpOnly: true,
     secure: true,
     sameSite: "strict",
     path: "/",
-    maxAge: 60 * 60 * 12,
+    maxAge: DASHBOARD_SESSION_MAX_AGE_SECONDS,
   });
   return Response.json({ ok: true });
 }
