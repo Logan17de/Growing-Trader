@@ -63,6 +63,7 @@ def test_order_insert_does_not_require_single_modifier() -> None:
         confidence=0.8,
         contract=SimpleNamespace(contract=contract, score=0.75),
         risk=SimpleNamespace(quantity=65),
+        level=SimpleNamespace(level_name=None),
     )
 
     position = persistence.create_paper_order("signal-1", signal, 24_300.0)  # type: ignore[arg-type]
