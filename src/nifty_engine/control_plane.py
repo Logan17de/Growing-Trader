@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from base64 import urlsafe_b64decode
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import logging
 import os
 import socket
 import time
-from typing import Any
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -16,6 +18,108 @@ logger = logging.getLogger(__name__)
 
 def _decode_base64url(value: str) -> bytes:
     return urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _json_safe(value: Any) -> Any:
+    return json.loads(json.dumps(value, default=str))
+
+
+def _error_details(exc: Exception) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "ok": False,
+        "exception": type(exc).__name__,
+        "message": str(exc),
+    }
+    for attr in ("code", "msg", "status_code", "status"):
+        value = getattr(exc, attr, None)
+        if value not in (None, ""):
+            details[attr] = _json_safe(value)
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if response_status is not None:
+        details["http_status"] = response_status
+    return details
+
+
+def _summarize_private_payload(value: Any) -> dict[str, Any]:
+    safe = _json_safe(value)
+    if isinstance(safe, list):
+        return {"type": "list", "count": len(safe)}
+    if isinstance(safe, dict):
+        summary: dict[str, Any] = {"type": "object", "keys": list(safe.keys())[:20]}
+        for key in ("holdings", "positions", "data", "orders", "trades"):
+            nested = safe.get(key)
+            if isinstance(nested, list):
+                summary[f"{key}_count"] = len(nested)
+        return summary
+    return {"type": type(safe).__name__}
+
+
+def _summarize_option_chain(value: Any) -> dict[str, Any]:
+    safe = _json_safe(value)
+    if not isinstance(safe, dict):
+        return {"type": type(safe).__name__}
+    strikes = safe.get("strikes")
+    strike_keys = list(strikes.keys()) if isinstance(strikes, dict) else []
+    return {
+        "underlying_ltp": safe.get("underlying_ltp"),
+        "strike_count": len(strike_keys),
+        "sample_strikes": strike_keys[:5],
+    }
+
+
+def _probe(
+    call: Callable[[], Any],
+    *,
+    summarize: Callable[[Any], Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        value = call()
+        return {
+            "ok": True,
+            "value": _json_safe(summarize(value) if summarize else value),
+        }
+    except Exception as exc:
+        return _error_details(exc)
+
+
+def _is_forbidden(probe: dict[str, Any]) -> bool:
+    code = str(probe.get("code", "")).upper()
+    message = str(probe.get("message", "")).lower()
+    status = probe.get("http_status", probe.get("status_code"))
+    return code == "GA005" or "forbidden" in message or status == 403
+
+
+def _classify_market_diagnostic(
+    live_data: dict[str, dict[str, Any]],
+    non_trading: dict[str, dict[str, Any]],
+) -> tuple[str, str]:
+    live_results = list(live_data.values())
+    successes = sum(1 for item in live_results if item.get("ok"))
+    forbidden = sum(1 for item in live_results if _is_forbidden(item))
+    non_trading_successes = sum(1 for item in non_trading.values() if item.get("ok"))
+
+    if live_results and successes == len(live_results):
+        return "ok", "All tested Groww Live Data endpoints are available."
+    if successes:
+        return (
+            "partial",
+            "Groww Live Data is partially available. Review the per-endpoint results to isolate the denied instrument or API family.",
+        )
+    if live_results and forbidden == len(live_results):
+        if non_trading_successes:
+            return (
+                "forbidden",
+                "Authentication and non-trading account APIs work, but every tested Live Data endpoint is forbidden. This pattern points to Groww Live Data authorization/subscription or daily API approval rather than a bad symbol. Groww documents static-IP whitelisting for order placement, so this diagnostic does not by itself implicate the registered IP.",
+            )
+        return (
+            "forbidden",
+            "Every tested Groww Live Data endpoint is forbidden and non-trading probes also failed. Check API subscription, daily API approval, account authorization, and the returned Groww error codes.",
+        )
+    return (
+        "error",
+        "No tested Groww Live Data endpoint succeeded. Review the captured exception classes, Groww codes and HTTP statuses below.",
+    )
 
 
 class CredentialCipher:
@@ -98,8 +202,6 @@ class SupabaseControlPlane:
         result: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
-        from datetime import datetime, timezone
-
         values: dict[str, Any] = {
             "status": "failed" if error else "completed",
             "completed_at": datetime.now(timezone.utc).isoformat(),
@@ -118,8 +220,6 @@ class SupabaseControlPlane:
         market_data: dict[str, Any] | None = None,
         last_error: str | None = None,
     ) -> None:
-        from datetime import datetime, timezone
-
         now = datetime.now(timezone.utc).isoformat()
         self.client.table("engine_status").upsert(
             {
@@ -183,27 +283,120 @@ class OracleControlAgent:
         self.last_error = None
         return {"ok": True, "profile": profile}
 
+    def _nearest_nifty_expiry(self, groww: Any) -> tuple[dict[str, Any], str | None]:
+        today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+        months: list[tuple[int, int]] = [(today.year, today.month)]
+        if today.month == 12:
+            months.append((today.year + 1, 1))
+        else:
+            months.append((today.year, today.month + 1))
+
+        attempts: list[dict[str, Any]] = []
+        for year, month in months:
+            probe = _probe(
+                lambda year=year, month=month: groww.get_expiries(
+                    exchange=groww.EXCHANGE_NSE,
+                    underlying_symbol="NIFTY",
+                    year=year,
+                    month=month,
+                )
+            )
+            attempts.append({"year": year, "month": month, **probe})
+            if not probe.get("ok"):
+                continue
+            value = probe.get("value")
+            expiries = value.get("expiries", []) if isinstance(value, dict) else []
+            future = sorted(
+                str(item) for item in expiries if str(item) >= today.isoformat()
+            )
+            if future:
+                return {"ok": True, "expiry": future[0], "attempts": attempts}, future[0]
+
+        return {
+            "ok": False,
+            "message": "Could not resolve a current NIFTY expiry; option-chain probe skipped.",
+            "attempts": attempts,
+        }, None
+
     def _test_market_data(self) -> dict[str, Any]:
         groww, profile = self._groww_client()
         self.groww_authenticated = True
-        ltp = groww.get_ltp(
-            segment=groww.SEGMENT_CASH,
-            exchange_trading_symbols="NSE_NIFTY",
-        )
-        quote = groww.get_quote(
-            exchange=groww.EXCHANGE_NSE,
-            segment=groww.SEGMENT_CASH,
-            trading_symbol="NIFTY",
-        )
+
+        non_trading = {
+            "holdings": _probe(
+                groww.get_holdings_for_user,
+                summarize=_summarize_private_payload,
+            ),
+            "positions": _probe(
+                groww.get_positions_for_user,
+                summarize=_summarize_private_payload,
+            ),
+        }
+        live_data = {
+            "reliance_ltp": _probe(
+                lambda: groww.get_ltp(
+                    segment=groww.SEGMENT_CASH,
+                    exchange_trading_symbols="NSE_RELIANCE",
+                )
+            ),
+            "nifty_ltp": _probe(
+                lambda: groww.get_ltp(
+                    segment=groww.SEGMENT_CASH,
+                    exchange_trading_symbols="NSE_NIFTY",
+                )
+            ),
+            "nifty_quote": _probe(
+                lambda: groww.get_quote(
+                    exchange=groww.EXCHANGE_NSE,
+                    segment=groww.SEGMENT_CASH,
+                    trading_symbol="NIFTY",
+                )
+            ),
+            "nifty_ohlc": _probe(
+                lambda: groww.get_ohlc(
+                    segment=groww.SEGMENT_CASH,
+                    exchange_trading_symbols="NSE_NIFTY",
+                )
+            ),
+        }
+
+        expiry_probe, expiry = self._nearest_nifty_expiry(groww)
+        derivatives: dict[str, Any] = {"nifty_expiry": expiry_probe}
+        if expiry:
+            derivatives["nifty_option_chain"] = _probe(
+                lambda: groww.get_option_chain(
+                    exchange=groww.EXCHANGE_NSE,
+                    underlying="NIFTY",
+                    expiry_date=expiry,
+                ),
+                summarize=_summarize_option_chain,
+            )
+        else:
+            derivatives["nifty_option_chain"] = {
+                "ok": False,
+                "skipped": True,
+                "message": "No expiry was resolved, so the option-chain endpoint was not called.",
+            }
+
+        status, conclusion = _classify_market_diagnostic(live_data, non_trading)
         data = {
             "profile": profile,
-            "ltp": ltp,
-            "quote": quote,
+            "non_trading": non_trading,
+            "live_data": live_data,
+            "derivatives": derivatives,
+            "classification": status,
+            "conclusion": conclusion,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
         }
-        self.market_data_status = "ok"
-        self.market_data = json.loads(json.dumps(data, default=str))
-        self.last_error = None
-        return {"ok": True, "market_data": self.market_data}
+        self.market_data_status = status
+        self.market_data = _json_safe(data)
+        self.last_error = None if status == "ok" else conclusion
+        return {
+            "ok": status == "ok",
+            "classification": status,
+            "conclusion": conclusion,
+            "diagnostic": self.market_data,
+        }
 
     def _write_heartbeat(self) -> None:
         self.control.heartbeat(
