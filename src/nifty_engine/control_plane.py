@@ -92,47 +92,60 @@ class SupabaseControlPlane:
         return dict(rows[0]) if rows else None
 
     def complete_command(
-        self, command_id: str, *, result: dict[str, Any] | None = None,
+        self,
+        command_id: str,
+        *,
+        result: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
+        from datetime import datetime, timezone
+
         values: dict[str, Any] = {
             "status": "failed" if error else "completed",
-            "completed_at": "now()",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
             "result": result,
             "error": error,
         }
-        # PostgREST does not interpret now() strings as SQL functions, so use an ISO timestamp.
-        from datetime import datetime, timezone
-        values["completed_at"] = datetime.now(timezone.utc).isoformat()
         self.client.table("engine_commands").update(values).eq("id", command_id).execute()
 
     def heartbeat(
-        self, *, worker_id: str, state: str, groww_authenticated: bool = False,
-        market_data_status: str = "unknown", market_data: dict[str, Any] | None = None,
+        self,
+        *,
+        worker_id: str,
+        state: str,
+        groww_authenticated: bool = False,
+        market_data_status: str = "unknown",
+        market_data: dict[str, Any] | None = None,
         last_error: str | None = None,
     ) -> None:
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc).isoformat()
-        self.client.table("engine_status").upsert({
-            "worker_id": worker_id,
-            "state": state,
-            "execution_mode": "paper",
-            "last_heartbeat": now,
-            "groww_authenticated": groww_authenticated,
-            "market_data_status": market_data_status,
-            "market_data": market_data,
-            "last_error": last_error,
-            "metadata": {"hostname": socket.gethostname(), "pid": os.getpid()},
-            "updated_at": now,
-        }, on_conflict="worker_id").execute()
+        self.client.table("engine_status").upsert(
+            {
+                "worker_id": worker_id,
+                "state": state,
+                "execution_mode": "paper",
+                "last_heartbeat": now,
+                "groww_authenticated": groww_authenticated,
+                "market_data_status": market_data_status,
+                "market_data": market_data,
+                "last_error": last_error,
+                "metadata": {"hostname": socket.gethostname(), "pid": os.getpid()},
+                "updated_at": now,
+            },
+            on_conflict="worker_id",
+        ).execute()
 
 
 class OracleControlAgent:
     """Outbound-only Oracle agent for Vercel/Supabase dashboard commands."""
 
     def __init__(
-        self, control: SupabaseControlPlane, *, worker_id: str = "oracle-primary",
+        self,
+        control: SupabaseControlPlane,
+        *,
+        worker_id: str = "oracle-primary",
         poll_seconds: float = 2.0,
     ) -> None:
         if poll_seconds <= 0:
@@ -151,7 +164,8 @@ class OracleControlAgent:
 
         credentials = self.control.load_groww_credentials()
         token = GrowwAPI.get_access_token(
-            api_key=credentials.api_key, secret=credentials.api_secret
+            api_key=credentials.api_key,
+            secret=credentials.api_secret,
         )
         groww = GrowwAPI(token)
         profile = dict(groww.get_user_profile())
@@ -201,14 +215,16 @@ class OracleControlAgent:
             last_error=self.last_error,
         )
 
-    def run_once(self) -> None:
+    def run_once(self) -> bool:
+        """Process at most one command. Return False when the agent should exit."""
         self._write_heartbeat()
         command = self.control.claim_command(self.worker_id)
         if command is None:
-            return
+            return True
 
         command_id = str(command["id"])
         command_name = str(command["command"])
+        stop_requested = command_name == "STOP"
         self.state = f"running:{command_name.lower()}"
         self._write_heartbeat()
         try:
@@ -231,15 +247,19 @@ class OracleControlAgent:
             self.control.complete_command(command_id, error=self.last_error)
             logger.exception("control command %s failed", command_name)
         finally:
-            if self.state != "stopped":
+            if not stop_requested:
                 self.state = "idle"
             self._write_heartbeat()
+
+        return not stop_requested
 
     def run_forever(self) -> None:
         logger.info("Oracle control agent started as %s", self.worker_id)
         while True:
             try:
-                self.run_once()
+                if not self.run_once():
+                    logger.info("Oracle control agent stopped by dashboard command")
+                    return
             except KeyboardInterrupt:
                 raise
             except Exception:
