@@ -1,7 +1,7 @@
 import { isDashboardAuthorized } from "@/lib/dashboardAuth";
 import { serverSupabase } from "@/lib/serverSupabase";
 
-type QueryResult = { data: unknown; error: { message?: string } | null };
+type QueryResult = { data: any; error: { message?: string } | null };
 
 function collectError(
   errors: Record<string, string>,
@@ -18,7 +18,14 @@ export async function GET() {
 
   try {
     const supabase = serverSupabase();
-    const [workerResult, commandResult, credentialResult, signalResult, levelsResult] = await Promise.all([
+    const [
+      workerResult,
+      commandResult,
+      credentialResult,
+      signalResult,
+      levelsResult,
+      paperResult,
+    ] = await Promise.all([
       supabase.from("engine_status").select("*").eq("worker_id", "oracle-primary").maybeSingle(),
       supabase.from("engine_commands")
         .select("id,command,status,result,error,created_at,claimed_at,completed_at")
@@ -29,6 +36,8 @@ export async function GET() {
       supabase.from("strategy_levels")
         .select("id,name,kind,price,source,enabled,updated_at")
         .order("price", { ascending: true }),
+      supabase.from("paper_engine_status")
+        .select("payload,updated_at").eq("worker_id", "oracle-primary").maybeSingle(),
     ]);
 
     const backendErrors: Record<string, string> = {};
@@ -37,6 +46,7 @@ export async function GET() {
     collectError(backendErrors, "credentials", credentialResult);
     collectError(backendErrors, "signals", signalResult);
     collectError(backendErrors, "levels", levelsResult);
+    collectError(backendErrors, "paperEngine", paperResult);
 
     const worker = workerResult.error ? null : workerResult.data;
     const heartbeat = worker?.last_heartbeat ? Date.parse(worker.last_heartbeat) : 0;
@@ -65,6 +75,13 @@ export async function GET() {
       },
       latestSignal: signalResult.error ? null : signalResult.data ?? null,
       levels: levelsResult.error ? [] : levelsResult.data ?? [],
+      paperEngine: paperResult.error ? {
+        running: false,
+        state: "unknown",
+      } : {
+        ...(paperResult.data?.payload ?? { running: false, state: "stopped" }),
+        statusUpdatedAt: paperResult.data?.updated_at ?? null,
+      },
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return Response.json(
