@@ -25,8 +25,6 @@ export async function GET() {
       signalResult,
       levelsResult,
       paperResult,
-      parameterResult,
-      volumeResult,
     ] = await Promise.all([
       supabase.from("engine_status").select("*").eq("worker_id", "oracle-primary").maybeSingle(),
       supabase.from("engine_commands")
@@ -40,14 +38,6 @@ export async function GET() {
         .order("price", { ascending: true }),
       supabase.from("paper_engine_status")
         .select("payload,updated_at").eq("worker_id", "oracle-primary").maybeSingle(),
-      supabase.from("strategy_parameters")
-        .select("key,category,value,unit,description,updated_at")
-        .order("category", { ascending: true })
-        .order("key", { ascending: true }),
-      supabase.from("nifty_volume_series")
-        .select("observed_at,nifty_ltp,synthetic_vwap,constituent_volume_delta,constituent_turnover,cash_pressure,breadth,participation,heavyweight_score,futures_score,option_score,vwap_score,combined_score")
-        .order("observed_at", { ascending: false })
-        .limit(120),
     ]);
 
     const backendErrors: Record<string, string> = {};
@@ -57,8 +47,6 @@ export async function GET() {
     collectError(backendErrors, "signals", signalResult);
     collectError(backendErrors, "levels", levelsResult);
     collectError(backendErrors, "paperEngine", paperResult);
-    collectError(backendErrors, "strategyParameters", parameterResult);
-    collectError(backendErrors, "niftyVolumeSeries", volumeResult);
 
     const worker = workerResult.error ? null : workerResult.data;
     const heartbeat = worker?.last_heartbeat ? Date.parse(worker.last_heartbeat) : 0;
@@ -66,9 +54,6 @@ export async function GET() {
     const stopped = worker?.state === "stopped";
     const workerOnline = heartbeatFresh && !stopped;
     const workerStale = heartbeat > 0 && !heartbeatFresh && !stopped;
-    const volumeSeries = volumeResult.error
-      ? []
-      : [...(volumeResult.data ?? [])].reverse();
 
     return Response.json({
       controlPlane: {
@@ -90,8 +75,6 @@ export async function GET() {
       },
       latestSignal: signalResult.error ? null : signalResult.data ?? null,
       levels: levelsResult.error ? [] : levelsResult.data ?? [],
-      strategyParameters: parameterResult.error ? [] : parameterResult.data ?? [],
-      niftyVolumeSeries: volumeSeries,
       paperEngine: paperResult.error ? {
         running: false,
         state: "unknown",
