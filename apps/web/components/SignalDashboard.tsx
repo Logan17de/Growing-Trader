@@ -55,6 +55,9 @@ export default function SignalDashboard() {
   const [status, setStatus] = useState<ControlStatus | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
+  const [levelName, setLevelName] = useState("");
+  const [levelKind, setLevelKind] = useState<"support"|"resistance">("support");
+  const [levelPrice, setLevelPrice] = useState("");
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -100,6 +103,26 @@ export default function SignalDashboard() {
       setApiKey(""); setApiSecret(""); setNotice("Groww credentials encrypted and saved. Oracle can now use them.");
       await loadStatus();
     } catch (error) { setNotice(error instanceof Error ? error.message : "Could not save credentials"); }
+    finally { setBusy(""); }
+  }
+
+  async function saveLevel(event: FormEvent) {
+    event.preventDefault();
+    setBusy("level"); setNotice("");
+    try {
+      await jsonRequest("/api/control/levels", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ name:levelName, kind:levelKind, price:Number(levelPrice) }) });
+      setLevelName(""); setLevelPrice(""); setNotice("Support/resistance level saved.");
+      await loadStatus();
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not save level"); }
+    finally { setBusy(""); }
+  }
+
+  async function removeLevel(id:string) {
+    setBusy(`delete-${id}`); setNotice("");
+    try {
+      await jsonRequest("/api/control/levels", { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ id }) });
+      await loadStatus();
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not remove level"); }
     finally { setBusy(""); }
   }
 
@@ -201,8 +224,14 @@ export default function SignalDashboard() {
         </article>
 
         <article className="card span-2">
-          <span className="label">SUPPORT / RESISTANCE</span><h2>Active levels</h2>
-          {!status?.levels.length ? <p className="muted">No levels configured yet.</p> : <div className="level-list">{status.levels.map((level)=><div key={level.id}><strong>{level.name}</strong><span>{level.kind}</span><b>{Number(level.price).toLocaleString()}</b><em>{level.enabled ? "enabled" : "disabled"}</em></div>)}</div>}
+          <div className="card-head"><div><span className="label">SUPPORT / RESISTANCE</span><h2>Trading levels</h2></div><span className="pill">{status?.levels.length ?? 0} levels</span></div>
+          <form className="level-form" onSubmit={saveLevel}>
+            <label className="field"><span>Name</span><input value={levelName} onChange={(e)=>setLevelName(e.target.value)} placeholder="S1 / R1" required /></label>
+            <label className="field"><span>Type</span><select value={levelKind} onChange={(e)=>setLevelKind(e.target.value as "support"|"resistance")}><option value="support">Support</option><option value="resistance">Resistance</option></select></label>
+            <label className="field"><span>Price</span><input type="number" step="0.05" min="0" value={levelPrice} onChange={(e)=>setLevelPrice(e.target.value)} placeholder="25000" required /></label>
+            <button className="primary" disabled={busy==="level"}>{busy==="level" ? "Saving…" : "Save level"}</button>
+          </form>
+          {!status?.levels.length ? <p className="muted">No levels configured yet.</p> : <div className="level-list">{status.levels.map((level)=><div key={level.id}><strong>{level.name}</strong><span>{level.kind}</span><b>{Number(level.price).toLocaleString()}</b><em>{level.enabled ? "enabled" : "disabled"}</em><button className="mini-danger" onClick={()=>removeLevel(level.id)} disabled={busy===`delete-${level.id}`}>Remove</button></div>)}</div>}
         </article>
       </section>
     </main>
