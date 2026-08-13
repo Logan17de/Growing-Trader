@@ -1,7 +1,7 @@
 import type { SignalPayload } from "@/lib/types";
 
 export type WorkerStatus = {
-  online?: boolean; stale?: boolean; state?: string; execution_mode?: "paper";
+  online?: boolean; stale?: boolean; state?: string; execution_mode?: "paper" | "live";
   last_heartbeat?: string; groww_authenticated?: boolean; market_data_status?: string;
   market_data?: Record<string, unknown> | null; last_error?: string | null;
 };
@@ -18,7 +18,8 @@ export type PaperPosition = {
 };
 
 export type PaperEngineStatus = {
-  running?: boolean; state?: string; feed_connected?: boolean; started_at?: string; updated_at?: string;
+  running?: boolean; state?: string; mode?: "paper" | "live"; live_armed?: boolean; max_order_premium?: number;
+  feed_connected?: boolean; started_at?: string; updated_at?: string;
   statusUpdatedAt?: string; universe_as_of?: string; weighting?: string; constituents_total?: number;
   constituents_resolved?: number; constituents_fresh?: number; quote_successes?: number; quote_errors?: string[];
   future_symbol?: string; future_ltp?: number | null; nifty_ltp?: number | null; option_expiry?: string;
@@ -29,16 +30,29 @@ export type PaperEngineStatus = {
   thresholds_updated_at?: string | null; opening_no_entry_minutes?: number; last_exit_reason?: string | null;
   last_error?: string | null; account_equity?: number; current_exposure?: number; available_capital?: number;
   kill_switch?: boolean; block_new_entries?: boolean; runtime_settings?: Record<string, number>;
-  last_signal?: { event?: string; direction?: string; confidence?: number; risk_allowed?: boolean; paper_entry?: boolean; reason?: string } | null;
+  last_signal?: { event?: string; direction?: string; confidence?: number; risk_allowed?: boolean; paper_entry?: boolean; entry?: boolean; mode?: "paper" | "live"; reason?: string } | null;
+  open_position?: PaperPosition | null;
   open_paper_position?: PaperPosition | null;
+};
+
+export type ExecutionControl = {
+  mode: "paper" | "live";
+  live_armed: boolean;
+  max_order_premium: number;
+  product: "MIS" | "NRML";
+  order_type: "MARKET";
+  armed_at: string | null;
+  updated_at: string;
 };
 
 export type CommandStatus = { id: string; command: string; status: string; result?: Record<string, unknown> | null; error?: string | null; created_at: string; completed_at?: string | null };
 export type StrategyLevel = { id: string; name: string; kind: "support" | "resistance"; price: number; source: string; enabled: boolean };
 
 export type PaperOrder = {
-  id: string; signal_id: string | null; broker_order_id: string | null; mode: "paper"; trading_symbol: string;
-  side: "BUY" | "SELL"; quantity: number; status: string; created_at: string; entry_price: number | null;
+  id: string; signal_id: string | null; broker_order_id: string | null; order_reference_id?: string | null;
+  mode: "paper" | "live"; trading_symbol: string;
+  side: "BUY" | "SELL"; quantity: number; filled_quantity?: number; average_fill_price?: number | null;
+  status: string; created_at: string; entry_price: number | null;
   paper_fill_price?: number | null; paper_slippage?: number | null; entry_nifty: number | null;
   signal_event: string | null; signal_direction: string | null; confidence: number | null; exit_policy: string | null;
 };
@@ -46,6 +60,7 @@ export type PaperOrder = {
 export type PaperTrade = {
   id: string; order_id: string | null; trading_symbol: string; quantity: number; fill_price: number; pnl: number | null;
   executed_at: string; entry_price: number | null; exit_policy: string | null; exit_reason?: string | null; paper_slippage?: number | null;
+  mode?: "paper" | "live"; broker_order_id?: string | null; order_reference_id?: string | null;
 };
 
 export type PaperOutcome = { id: string; signal_id: string; order_id: string | null; horizon_seconds: number; observed_at: string; option_ltp: number; nifty_ltp: number; option_return_pct: number | null; underlying_move_points: number | null };
@@ -53,6 +68,7 @@ export type RecentSignal = { payload: SignalPayload; observed_at: string };
 
 export type ControlStatus = {
   controlPlane: { healthy: boolean; errors: Record<string, string> }; worker: WorkerStatus; paperEngine: PaperEngineStatus;
+  executionControl: ExecutionControl | null;
   latestCommand: CommandStatus | null; credentials: { configured: boolean; updatedAt: string | null };
   latestSignal: RecentSignal | null; recentSignals: RecentSignal[]; levels: StrategyLevel[];
   paperOrders: PaperOrder[]; paperTrades: PaperTrade[]; paperOutcomes: PaperOutcome[];
@@ -61,7 +77,7 @@ export type ControlStatus = {
 export type TradingDataSnapshot = Pick<ControlStatus, "recentSignals" | "paperOrders" | "paperTrades" | "paperOutcomes">;
 
 export type ControlCommand =
-  | "TEST_AUTH" | "TEST_MARKET_DATA" | "START_PAPER_ENGINE" | "STOP_PAPER_ENGINE" | "STOP"
+  | "TEST_AUTH" | "TEST_MARKET_DATA" | "START_PAPER_ENGINE" | "STOP_PAPER_ENGINE" | "START_ENGINE" | "STOP_ENGINE" | "STOP"
   | "EXIT_PAPER_POSITION" | "UPDATE_PAPER_POSITION" | "KILL_SWITCH" | "RESET_KILL_SWITCH" | "RUN_REPLAY";
 
 export type TerminalRoute = "dashboard" | "market" | "strategies" | "positions" | "orders" | "analytics" | "replay" | "risk" | "activity" | "settings";

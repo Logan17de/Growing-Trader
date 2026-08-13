@@ -5,18 +5,19 @@ import logging
 from typing import Any
 
 from .control_plane import OracleControlAgent
-from .paper_runner import PaperEngineRuntime
+from .execution import GrowwOrderExecutor
 from .replay_service import replay_stored_history
+from .trading_runner import TradingEngineRuntime, TradingPersistence
 
 logger = logging.getLogger(__name__)
 
 
 class LiveOracleControlAgent(OracleControlAgent):
-    """Oracle control worker with a separately startable/stoppable paper engine."""
+    """Oracle control worker with a separately startable trading engine."""
 
     def __init__(self, control: Any, **kwargs: Any) -> None:
         super().__init__(control, **kwargs)
-        self.paper_runtime = PaperEngineRuntime(control)
+        self.paper_runtime = TradingEngineRuntime(control)
 
     def _write_paper_status(self) -> None:
         status = self.paper_runtime.status()
@@ -34,17 +35,65 @@ class LiveOracleControlAgent(OracleControlAgent):
         except Exception:
             logger.debug("activity table unavailable", exc_info=True)
 
-    def _start_paper_engine(self) -> dict[str, Any]:
+    def _start_engine(self) -> dict[str, Any]:
         self.groww_authenticated = True
         status = self.paper_runtime.start(self._groww_client)
         self.last_error = None
         self._write_paper_status()
-        return {"ok": True, "paper_engine": status}
+        return {"ok": True, "trading_engine": status, "paper_engine": status}
 
-    def _stop_paper_engine(self) -> dict[str, Any]:
+    def _stop_engine(self) -> dict[str, Any]:
         status = self.paper_runtime.stop()
         self._write_paper_status()
-        return {"ok": True, "paper_engine": status}
+        return {"ok": True, "trading_engine": status, "paper_engine": status}
+
+    def _require_paper_mode_for_legacy_start(self) -> None:
+        response = self.control.client.table("execution_control_state").select("mode").eq("id", True).maybe_single().execute()
+        mode = str((response.data or {}).get("mode") or "paper")
+        if mode != "paper":
+            raise RuntimeError("START_PAPER_ENGINE is disabled while LIVE mode is selected; use START_ENGINE")
+
+    def _execution_mode(self) -> str:
+        response = self.control.client.table("execution_control_state").select("mode,product").eq("id", True).maybe_single().execute()
+        return str((response.data or {}).get("mode") or "paper")
+
+    def _emergency_live_exit(self, fraction: float, reason: str) -> dict[str, Any]:
+        groww, _profile = self._groww_client()
+        persistence = TradingPersistence(self.control.client, 1.0)
+        execution = persistence.load_execution_control()
+        if str(execution.get("mode")) != "live":
+            raise RuntimeError("emergency broker exit is only available for LIVE mode")
+        executor = GrowwOrderExecutor(groww, product=str(execution.get("product") or "MIS"))
+        persistence.recover_submitting_entries(executor)
+        persistence.recover_pending_exits(executor)
+        _risk, position = persistence.restore_risk_state_for_mode("live")
+        if position is None:
+            return {"ok": True, "closed": False, "reason": "no open LIVE position"}
+        broker_quantity = executor.broker_position_quantity(position.trading_symbol)
+        if broker_quantity is None or broker_quantity != position.quantity:
+            self.control.client.table("risk_control_state").update({
+                "kill_switch": True, "block_new_entries": True,
+                "reason": f"Emergency exit reconciliation mismatch for {position.trading_symbol}: DB={position.quantity}, broker={broker_quantity}",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", True).execute()
+            raise RuntimeError(f"cannot safely exit: DB quantity {position.quantity} != broker quantity {broker_quantity}")
+        pnl, closed, fill = persistence.reduce_live_order(
+            position, executor=executor, observed_at=datetime.now(timezone.utc), exit_reason=reason, fraction=fraction,
+        )
+        return {
+            "ok": True, "closed": closed, "remaining_quantity": 0 if closed else position.quantity,
+            "filled_quantity": fill.filled_quantity, "average_fill_price": fill.average_fill_price,
+            "broker_order_id": fill.groww_order_id, "pnl": pnl,
+        }
+
+    def _exit_position(self, payload: dict[str, Any]) -> dict[str, Any]:
+        fraction = float(payload.get("fraction", 1.0))
+        runtime = self.paper_runtime.status()
+        if bool(runtime.get("running")):
+            return self.paper_runtime.request_exit(fraction)
+        if self._execution_mode() == "live":
+            return self._emergency_live_exit(fraction, "manual_exit_control")
+        return self.paper_runtime.request_exit(fraction)
 
     def _set_kill_switch(self, enabled: bool, payload: dict[str, Any]) -> dict[str, Any]:
         close_position = bool(payload.get("close_position", True))
@@ -55,8 +104,11 @@ class LiveOracleControlAgent(OracleControlAgent):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", True).execute()
         result = self.paper_runtime.set_kill_switch(enabled, close_position=close_position)
+        emergency: dict[str, Any] | None = None
+        if enabled and close_position and not bool(self.paper_runtime.status().get("running")) and self._execution_mode() == "live":
+            emergency = self._emergency_live_exit(1.0, "kill_switch")
         self._activity("critical" if enabled else "success", "kill_switch", "Kill switch activated" if enabled else "Kill switch reset", reason)
-        return result
+        return {**result, "emergency_exit": emergency} if emergency is not None else result
 
     def _run_replay(self, payload: dict[str, Any]) -> dict[str, Any]:
         run_id = str(payload.get("replay_run_id") or "")
@@ -92,11 +144,14 @@ class LiveOracleControlAgent(OracleControlAgent):
             elif command_name == "TEST_MARKET_DATA":
                 result = self._test_market_data()
             elif command_name == "START_PAPER_ENGINE":
-                result = self._start_paper_engine()
-            elif command_name == "STOP_PAPER_ENGINE":
-                result = self._stop_paper_engine()
+                self._require_paper_mode_for_legacy_start()
+                result = self._start_engine()
+            elif command_name == "START_ENGINE":
+                result = self._start_engine()
+            elif command_name in {"STOP_PAPER_ENGINE", "STOP_ENGINE"}:
+                result = self._stop_engine()
             elif command_name == "EXIT_PAPER_POSITION":
-                result = self.paper_runtime.request_exit(float(payload.get("fraction", 1.0)))
+                result = self._exit_position(payload)
             elif command_name == "UPDATE_PAPER_POSITION":
                 result = self.paper_runtime.update_position_controls(payload)
             elif command_name == "KILL_SWITCH":
@@ -109,7 +164,7 @@ class LiveOracleControlAgent(OracleControlAgent):
                 self.paper_runtime.stop()
                 self._write_paper_status()
                 self.state = "stopped"
-                result = {"ok": True, "state": self.state, "paper_engine": self.paper_runtime.status()}
+                result = {"ok": True, "state": self.state, "trading_engine": self.paper_runtime.status(), "paper_engine": self.paper_runtime.status()}
             else:
                 raise RuntimeError(f"unsupported command: {command_name}")
             self.control.complete_command(command_id, result=result)
@@ -131,6 +186,6 @@ class LiveOracleControlAgent(OracleControlAgent):
             try:
                 self._write_paper_status()
             except Exception:
-                logger.exception("paper-engine status write failed")
+                logger.exception("trading-engine status write failed")
 
         return not stop_requested
