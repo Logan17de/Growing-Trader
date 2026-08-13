@@ -25,6 +25,42 @@ export type NiftyVolumePoint = {
   combined_score: number;
 };
 
+export type MarketWatchObservation = {
+  observed_at: string;
+  session_date: string;
+  nifty_ltp: number | null;
+  constituent_volume_delta: number | null;
+  constituent_turnover: number | null;
+  cash_pressure: number | null;
+  breadth: number | null;
+  participation: number | null;
+  heavyweight_score: number | null;
+  futures_move_bps: number | null;
+  futures_volume_delta: number | null;
+  futures_oi_change_pct: number | null;
+  futures_basis_points: number | null;
+  futures_score: number | null;
+  option_score: number | null;
+  option_volume_imbalance: number | null;
+  option_oi_change_imbalance: number | null;
+  option_iv_skew: number | null;
+  vwap_distance_bps: number | null;
+  combined_direction_score: number | null;
+  event: string;
+  direction: string;
+  confidence: number;
+  nifty_move_1m_bps: number | null;
+  nifty_move_3m_bps: number | null;
+  nifty_move_5m_bps: number | null;
+  nifty_move_10m_bps: number | null;
+  nifty_move_15m_bps: number | null;
+  max_up_15m_bps: number | null;
+  max_down_15m_bps: number | null;
+  big_move_1m: boolean;
+  big_move_5m: boolean;
+  big_move_15m: boolean;
+};
+
 export type ResearchPaperEngineStatus = {
   running?: boolean;
   state?: string;
@@ -58,5 +94,7 @@ export type ResearchPaperEngineStatus = {
 export type ResearchStatusPayload = {
   strategyParameters: StrategyParameter[];
   niftyVolumeSeries: NiftyVolumePoint[];
+  marketWatch: MarketWatchObservation[];
+  bigMoves: MarketWatchObservation[];
   paperEngine: ResearchPaperEngineStatus;
 };
