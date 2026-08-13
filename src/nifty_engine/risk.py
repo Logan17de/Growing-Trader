@@ -16,6 +16,7 @@ class RiskState:
     consecutive_losses: int = 0
     last_trade_at: datetime | None = None
     open_position: bool = False
+    external_block_reason: str | None = None
 
 
 class RiskEngine:
@@ -29,6 +30,8 @@ class RiskEngine:
     ) -> RiskDecision:
         if state.account_equity <= 0:
             return RiskDecision(False, 0, 0.0, "account equity must be positive")
+        if state.external_block_reason:
+            return RiskDecision(False, 0, state.account_equity * self.params.risk_per_trade_pct, state.external_block_reason)
         if confidence < self.params.min_signal_confidence:
             return RiskDecision(False, 0, 0.0, "signal confidence below minimum")
         if constituent_count is not None and constituent_count < self.params.min_constituents:
