@@ -34,12 +34,7 @@ class BrokerFill:
 
 
 class GrowwOrderExecutor:
-    """Small idempotent wrapper around Groww's NSE F&O order APIs.
-
-    The strategy only buys options and later sells the same quantity to exit.  A
-    caller-provided reference is checked before submission so a retry after a
-    process/network failure does not intentionally create a duplicate order.
-    """
+    """Idempotent wrapper around Groww's NSE F&O order APIs."""
 
     def __init__(
         self,
@@ -162,6 +157,13 @@ class GrowwOrderExecutor:
             raw=last,
         )
 
+    def recover_by_reference(self, order_reference_id: str, requested_quantity: int) -> BrokerFill | None:
+        existing = self._status_by_reference(order_reference_id)
+        groww_order_id = str((existing or {}).get("groww_order_id") or "")
+        if not groww_order_id:
+            return None
+        return self._resolve_fill(groww_order_id, order_reference_id, requested_quantity)
+
     def submit_market_option(
         self,
         *,
@@ -176,23 +178,23 @@ class GrowwOrderExecutor:
         if side not in {"BUY", "SELL"}:
             raise ValueError("side must be BUY or SELL")
 
-        existing = self._status_by_reference(order_reference_id)
-        groww_order_id = str((existing or {}).get("groww_order_id") or "")
+        recovered = self.recover_by_reference(order_reference_id, quantity)
+        if recovered is not None:
+            return recovered
+        response = dict(self.groww.place_order(
+            trading_symbol=trading_symbol,
+            quantity=quantity,
+            validity=getattr(self.groww, "VALIDITY_DAY", "DAY"),
+            exchange=getattr(self.groww, "EXCHANGE_NSE", "NSE"),
+            segment=getattr(self.groww, "SEGMENT_FNO", "FNO"),
+            product=getattr(self.groww, f"PRODUCT_{self.product}", self.product),
+            order_type=getattr(self.groww, "ORDER_TYPE_MARKET", "MARKET"),
+            transaction_type=getattr(self.groww, f"TRANSACTION_TYPE_{side}", side),
+            order_reference_id=order_reference_id,
+        ) or {})
+        groww_order_id = str(response.get("groww_order_id") or "")
         if not groww_order_id:
-            response = dict(self.groww.place_order(
-                trading_symbol=trading_symbol,
-                quantity=quantity,
-                validity=getattr(self.groww, "VALIDITY_DAY", "DAY"),
-                exchange=getattr(self.groww, "EXCHANGE_NSE", "NSE"),
-                segment=getattr(self.groww, "SEGMENT_FNO", "FNO"),
-                product=getattr(self.groww, f"PRODUCT_{self.product}", self.product),
-                order_type=getattr(self.groww, "ORDER_TYPE_MARKET", "MARKET"),
-                transaction_type=getattr(self.groww, f"TRANSACTION_TYPE_{side}", side),
-                order_reference_id=order_reference_id,
-            ) or {})
-            groww_order_id = str(response.get("groww_order_id") or "")
-            if not groww_order_id:
-                raise RuntimeError(f"Groww did not return an order id: {response}")
+            raise RuntimeError(f"Groww did not return an order id: {response}")
         return self._resolve_fill(groww_order_id, order_reference_id, quantity)
 
     def broker_position_quantity(self, trading_symbol: str) -> int | None:
