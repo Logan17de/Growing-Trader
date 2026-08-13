@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyMinuteDirection, compareThreshold, formatIndianVolume, summarizeVolumeSession } from "./marketCalculations.ts";
+import { classifyMinuteDirection, compareThreshold, formatIndianVolume, latestContinuousRun, summarizeVolumeSession } from "./marketCalculations.ts";
 
 test("formats volume using Indian compact units", () => {
   assert.equal(formatIndianVolume(25_000), "25K");
@@ -22,6 +22,24 @@ test("summarizes minute volume and handles an empty dataset", () => {
     { nifty_ltp: 1, constituent_volume_delta: 100, constituent_turnover: 1_000 },
     { nifty_ltp: 2, constituent_volume_delta: 300, constituent_turnover: 4_000 },
   ]), { current: 300, average: 200, relative: 1.5, cumulative: 400, currentTurnover: 4_000, cumulativeTurnover: 5_000 });
+});
+
+test("starts a fresh chart run after a missing minute", () => {
+  const rows = [
+    { observed_at: "2026-08-13T06:00:00.000Z", value: "old-a" },
+    { observed_at: "2026-08-13T06:01:00.000Z", value: "old-b" },
+    { observed_at: "2026-08-13T06:12:00.000Z", value: "new-a" },
+    { observed_at: "2026-08-13T06:13:00.000Z", value: "new-b" },
+  ];
+  assert.deepEqual(latestContinuousRun(rows).map((row) => row.value), ["new-a", "new-b"]);
+});
+
+test("sorts the latest uninterrupted chart run chronologically", () => {
+  const rows = [
+    { observed_at: "2026-08-13T06:13:00.000Z", value: "second" },
+    { observed_at: "2026-08-13T06:12:00.000Z", value: "first" },
+  ];
+  assert.deepEqual(latestContinuousRun(rows).map((row) => row.value), ["first", "second"]);
 });
 
 test("compares minimum and maximum thresholds with a near state", () => {

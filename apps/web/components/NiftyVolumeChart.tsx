@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { classifyMinuteDirection, formatIndianVolume, summarizeVolumeSession } from "@/lib/marketCalculations";
+import { classifyMinuteDirection, formatIndianVolume, latestContinuousRun, summarizeVolumeSession } from "@/lib/marketCalculations";
 import type { NiftyVolumePoint } from "@/lib/researchTypes";
 
 export type { NiftyVolumePoint } from "@/lib/researchTypes";
@@ -29,30 +29,10 @@ function formatTurnover(value: number) {
   return `₹${crores.toLocaleString("en-IN", { maximumFractionDigits: crores >= 10 ? 1 : 2 })}Cr`;
 }
 
-function sessionKey(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
-}
-
 function tickIndices(points: NiftyVolumePoint[]) {
   if (points.length <= 1) return [0];
-  const desiredMinutes = [555, 600, 660, 720, 780, 840, 900];
-  const candidates = desiredMinutes.map((target) => {
-    let bestIndex = 0;
-    let bestDistance = Number.POSITIVE_INFINITY;
-    points.forEach((point, index) => {
-      const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date(point.observed_at));
-      const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
-      const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
-      const distance = Math.abs(hour * 60 + minute - target);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestIndex = index;
-      }
-    });
-    return bestIndex;
-  });
-  return [...new Set([0, ...candidates, points.length - 1])].sort((a, b) => a - b);
+  const count = Math.min(points.length, 6);
+  return [...new Set(Array.from({ length: count }, (_, index) => Math.round(index * (points.length - 1) / (count - 1))))];
 }
 
 function linePath(points: NiftyVolumePoint[], overlay: Overlay, step: number) {
@@ -71,10 +51,7 @@ function linePath(points: NiftyVolumePoint[], overlay: Overlay, step: number) {
 export default function NiftyVolumeChart({ points }: { points: NiftyVolumePoint[] }) {
   const [overlay, setOverlay] = useState<Overlay>("price");
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const sessionPoints = useMemo(() => {
-    const latestKey = points.length ? sessionKey(points.at(-1)?.observed_at ?? "") : "";
-    return latestKey ? points.filter((point) => sessionKey(point.observed_at) === latestKey) : points;
-  }, [points]);
+  const sessionPoints = useMemo(() => latestContinuousRun(points), [points]);
 
   if (!sessionPoints.length) {
     return (
@@ -106,15 +83,15 @@ export default function NiftyVolumeChart({ points }: { points: NiftyVolumePoint[
     <div className="intraday-volume-panel">
       <div className="volume-reference-grid" aria-label="Minute volume reference values">
         <div><span>Current 1-min volume</span><strong>{summary.current === null ? "—" : `${formatIndianVolume(summary.current)} shares`}</strong><small>Aggregate constituent volume</small></div>
-        <div><span>Average 1-min volume</span><strong>{summary.average === null ? "—" : `${formatIndianVolume(summary.average)} shares`}</strong><small>Current session average</small></div>
-        <div><span>Session-relative RVOL</span><strong>{summary.relative === null ? "—" : `${summary.relative.toFixed(2)}x`}</strong><small>Current ÷ session average</small></div>
-        <div><span>Session cumulative</span><strong>{summary.cumulative === null ? "—" : `${formatIndianVolume(summary.cumulative)} shares`}</strong><small>Constituent-derived volume</small></div>
+        <div><span>Average 1-min volume</span><strong>{summary.average === null ? "—" : `${formatIndianVolume(summary.average)} shares`}</strong><small>Current run average</small></div>
+        <div><span>Run-relative RVOL</span><strong>{summary.relative === null ? "—" : `${summary.relative.toFixed(2)}x`}</strong><small>Current ÷ run average</small></div>
+        <div><span>Current run total</span><strong>{summary.cumulative === null ? "—" : `${formatIndianVolume(summary.cumulative)} shares`}</strong><small>Resets after a data gap</small></div>
         <div><span>Current turnover</span><strong>{summary.currentTurnover === null ? "—" : formatTurnover(summary.currentTurnover)}</strong><small>Latest one-minute interval</small></div>
       </div>
 
       <div className="volume-chart-toolbar">
         <div>
-          <span className="label">One bar = one minute · India Standard Time</span>
+          <span className="label">One bar = one minute · India Standard Time · uninterrupted run</span>
           <strong>Aggregate NIFTY-50 constituent volume</strong>
         </div>
         <div className="segmented-control" aria-label="Chart overlay">
@@ -184,7 +161,7 @@ export default function NiftyVolumeChart({ points }: { points: NiftyVolumePoint[
         <span><i className="flat" />Unchanged</span>
         {overlay !== "none" && <span><i className="line" />{overlay === "price" ? `NIFTY · latest ${formatNumber(latest.nifty_ltp)} (${latestMove >= 0 ? "+" : ""}${formatNumber(latestMove)})` : `Direction score · ${latest.combined_score.toFixed(2)}`}</span>}
       </div>
-      <p className="volume-method-note">Green and red classify the NIFTY minute move; they do not identify trade aggressors. Volume is summed from NIFTY-50 constituents and is not exchange-reported NIFTY index volume.</p>
+      <p className="volume-method-note">A missing minute starts a fresh chart run, so a restarted engine never joins new bars to stale history. Green and red classify the NIFTY minute move; they do not identify trade aggressors. Volume is summed from NIFTY-50 constituents and is not exchange-reported NIFTY index volume.</p>
     </div>
   );
 }

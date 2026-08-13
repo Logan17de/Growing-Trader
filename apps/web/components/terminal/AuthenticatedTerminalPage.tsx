@@ -29,15 +29,12 @@ export function AuthenticatedTerminalPage({ activeRoute, eyebrow, title, descrip
 
   const mode = status.executionControl?.mode ?? status.paperEngine.mode ?? "paper";
   const armed = Boolean(status.executionControl?.live_armed ?? status.paperEngine.live_armed);
-  const modeLabel = mode === "live" ? (armed ? "LIVE · ARMED" : "LIVE · DISARMED") : "PAPER";
-  const modeTone = mode === "live" ? (armed ? "bad" : "warn") : "amber";
 
   return (
     <TerminalShell activeRoute={activeRoute} status={status} onLogout={async () => { await logout(); router.replace("/"); }}>
       <section className="page-hero terminal-page-hero">
         <div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p className="muted">{description}</p></div>
         <div className="hero-actions">
-          <span className={`mode-badge ${mode === "live" ? "live" : ""}`}><span className={`status-dot ${modeTone}`} />{modeLabel}</span>
           <button className="ghost" type="button" onClick={() => void refresh()} disabled={refreshing}><Icon name="refresh" className={refreshing ? "spin" : ""} />Refresh</button>
         </div>
       </section>
