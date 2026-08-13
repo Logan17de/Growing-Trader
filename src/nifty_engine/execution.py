@@ -6,7 +6,6 @@ from typing import Any
 
 
 TERMINAL_ORDER_STATES = {"EXECUTED", "COMPLETED", "REJECTED", "FAILED", "CANCELLED"}
-SUCCESS_ORDER_STATES = {"EXECUTED", "COMPLETED"}
 
 
 def make_order_reference(prefix: str, local_id: str) -> str:
@@ -36,14 +35,7 @@ class BrokerFill:
 class GrowwOrderExecutor:
     """Idempotent wrapper around Groww's NSE F&O order APIs."""
 
-    def __init__(
-        self,
-        groww: Any,
-        *,
-        product: str = "MIS",
-        timeout_seconds: float = 8.0,
-        poll_seconds: float = 0.5,
-    ) -> None:
+    def __init__(self, groww: Any, *, product: str = "MIS", timeout_seconds: float = 8.0, poll_seconds: float = 0.5) -> None:
         self.groww = groww
         self.product = product
         self.timeout_seconds = max(float(timeout_seconds), 1.0)
@@ -111,17 +103,11 @@ class GrowwOrderExecutor:
         filled_quantity = int(last.get("filled_quantity") or 0)
         if filled_quantity < requested_quantity and status not in TERMINAL_ORDER_STATES:
             try:
-                self.groww.cancel_order(
-                    segment=getattr(self.groww, "SEGMENT_FNO", "FNO"),
-                    groww_order_id=groww_order_id,
-                )
+                self.groww.cancel_order(segment=getattr(self.groww, "SEGMENT_FNO", "FNO"), groww_order_id=groww_order_id)
             except Exception:
                 pass
             try:
-                last = dict(self.groww.get_order_status(
-                    groww_order_id=groww_order_id,
-                    segment=getattr(self.groww, "SEGMENT_FNO", "FNO"),
-                ) or last)
+                last = dict(self.groww.get_order_status(groww_order_id=groww_order_id, segment=getattr(self.groww, "SEGMENT_FNO", "FNO")) or last)
                 status = str(last.get("order_status") or status).upper()
                 filled_quantity = int(last.get("filled_quantity") or filled_quantity)
             except Exception:
@@ -129,10 +115,7 @@ class GrowwOrderExecutor:
 
         average_fill_price = 0.0
         try:
-            detail = dict(self.groww.get_order_detail(
-                groww_order_id=groww_order_id,
-                segment=getattr(self.groww, "SEGMENT_FNO", "FNO"),
-            ) or {})
+            detail = dict(self.groww.get_order_detail(groww_order_id=groww_order_id, segment=getattr(self.groww, "SEGMENT_FNO", "FNO")) or {})
             average_fill_price = float(detail.get("average_fill_price") or 0.0)
             filled_quantity = max(filled_quantity, int(detail.get("filled_quantity") or 0))
             if detail.get("order_status"):
@@ -147,15 +130,9 @@ class GrowwOrderExecutor:
         if average_fill_price <= 0 and trade_average > 0:
             average_fill_price = trade_average
 
-        return BrokerFill(
-            groww_order_id=groww_order_id,
-            order_reference_id=order_reference_id,
-            status=status,
-            requested_quantity=requested_quantity,
-            filled_quantity=min(max(filled_quantity, 0), requested_quantity),
-            average_fill_price=average_fill_price,
-            raw=last,
-        )
+        return BrokerFill(groww_order_id=groww_order_id, order_reference_id=order_reference_id, status=status,
+                          requested_quantity=requested_quantity, filled_quantity=min(max(filled_quantity, 0), requested_quantity),
+                          average_fill_price=average_fill_price, raw=last)
 
     def recover_by_reference(self, order_reference_id: str, requested_quantity: int) -> BrokerFill | None:
         existing = self._status_by_reference(order_reference_id)
@@ -164,14 +141,20 @@ class GrowwOrderExecutor:
             return None
         return self._resolve_fill(groww_order_id, order_reference_id, requested_quantity)
 
-    def submit_market_option(
-        self,
-        *,
-        trading_symbol: str,
-        quantity: int,
-        side: str,
-        order_reference_id: str,
-    ) -> BrokerFill:
+    def _recover_after_uncertain_submit(self, order_reference_id: str, quantity: int, error: Exception | None = None) -> BrokerFill:
+        deadline = time.monotonic() + self.timeout_seconds
+        while time.monotonic() < deadline:
+            recovered = self.recover_by_reference(order_reference_id, quantity)
+            if recovered is not None:
+                return recovered
+            time.sleep(self.poll_seconds)
+        return BrokerFill(
+            groww_order_id="", order_reference_id=order_reference_id, status="SUBMITTING",
+            requested_quantity=quantity, filled_quantity=0, average_fill_price=0.0,
+            raw={"uncertain_submission": True, "error": f"{type(error).__name__}: {error}" if error else "Groww returned no order id"},
+        )
+
+    def submit_market_option(self, *, trading_symbol: str, quantity: int, side: str, order_reference_id: str) -> BrokerFill:
         if quantity <= 0:
             raise ValueError("quantity must be positive")
         side = side.upper()
@@ -181,20 +164,23 @@ class GrowwOrderExecutor:
         recovered = self.recover_by_reference(order_reference_id, quantity)
         if recovered is not None:
             return recovered
-        response = dict(self.groww.place_order(
-            trading_symbol=trading_symbol,
-            quantity=quantity,
-            validity=getattr(self.groww, "VALIDITY_DAY", "DAY"),
-            exchange=getattr(self.groww, "EXCHANGE_NSE", "NSE"),
-            segment=getattr(self.groww, "SEGMENT_FNO", "FNO"),
-            product=getattr(self.groww, f"PRODUCT_{self.product}", self.product),
-            order_type=getattr(self.groww, "ORDER_TYPE_MARKET", "MARKET"),
-            transaction_type=getattr(self.groww, f"TRANSACTION_TYPE_{side}", side),
-            order_reference_id=order_reference_id,
-        ) or {})
+        try:
+            response = dict(self.groww.place_order(
+                trading_symbol=trading_symbol,
+                quantity=quantity,
+                validity=getattr(self.groww, "VALIDITY_DAY", "DAY"),
+                exchange=getattr(self.groww, "EXCHANGE_NSE", "NSE"),
+                segment=getattr(self.groww, "SEGMENT_FNO", "FNO"),
+                product=getattr(self.groww, f"PRODUCT_{self.product}", self.product),
+                order_type=getattr(self.groww, "ORDER_TYPE_MARKET", "MARKET"),
+                transaction_type=getattr(self.groww, f"TRANSACTION_TYPE_{side}", side),
+                order_reference_id=order_reference_id,
+            ) or {})
+        except Exception as exc:
+            return self._recover_after_uncertain_submit(order_reference_id, quantity, exc)
         groww_order_id = str(response.get("groww_order_id") or "")
         if not groww_order_id:
-            raise RuntimeError(f"Groww did not return an order id: {response}")
+            return self._recover_after_uncertain_submit(order_reference_id, quantity)
         return self._resolve_fill(groww_order_id, order_reference_id, quantity)
 
     def broker_position_quantity(self, trading_symbol: str) -> int | None:
