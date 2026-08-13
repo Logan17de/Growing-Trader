@@ -1,28 +1,157 @@
-import { EmptyState } from "@/components/terminal/EmptyState";
+"use client";
+
+import { useMemo, useState } from "react";
+import { DailyPnlChart, StrategyPnlChart, WinLossDistribution } from "@/components/terminal/AnalyticsCharts";
 import { MetricCard } from "@/components/terminal/MetricCard";
 import { PerformanceChart } from "@/components/terminal/PerformanceChart";
 import { formatCurrency, formatPercent } from "@/lib/format";
-import { calculatePaperAnalytics, groupPnlBySymbol } from "@/lib/terminalAnalytics";
+import {
+  attributePaperTrades,
+  calculatePerformanceForTimeframe,
+  filterTradesByMode,
+  filterTradesByTimeframe,
+  groupStrategyPerformance,
+  type AnalyticsTimeframe,
+  type AttributedPaperTrade,
+  type PerformanceMetrics,
+} from "@/lib/terminalAnalytics";
 import type { ControlStatus, PaperOrder, PaperTrade } from "@/lib/terminalTypes";
 
-function extraAnalytics(status:ControlStatus){const orderById=new Map(status.paperOrders.map((o)=>[o.id,o]));const completed=status.paperTrades.filter((t)=>t.pnl!=null);const returns=completed.map((t)=>{const o=t.order_id?orderById.get(t.order_id):undefined;const basis=(t.entry_price??o?.entry_price??0)*t.quantity;return basis>0?(t.pnl??0)/basis:null;}).filter((x):x is number=>x!=null);const mean=returns.length?returns.reduce((a,b)=>a+b,0)/returns.length:null;const variance=mean!=null&&returns.length>1?returns.reduce((s,x)=>s+(x-mean)**2,0)/(returns.length-1):null;const sharpe=mean!=null&&variance!=null&&variance>0?mean/Math.sqrt(variance):null;const holds=completed.map((t)=>{const o=t.order_id?orderById.get(t.order_id):undefined;return o?Math.max((Date.parse(t.executed_at)-Date.parse(o.created_at))/1000,0):null;}).filter((x):x is number=>x!=null);const avgHold=holds.length?holds.reduce((a,b)=>a+b,0)/holds.length:null;const wins=completed.filter((t)=>(t.pnl??0)>0);const losses=completed.filter((t)=>(t.pnl??0)<0);const winRate=completed.length?wins.length/completed.length:null;const avgWin=wins.length?wins.reduce((s,t)=>s+(t.pnl??0),0)/wins.length:0;const avgLoss=losses.length?Math.abs(losses.reduce((s,t)=>s+(t.pnl??0),0)/losses.length):0;const expectancy=winRate==null?null:winRate*avgWin-(1-winRate)*avgLoss;const rr=avgLoss>0?avgWin/avgLoss:null;const type=(suffix:string)=>{const rows=completed.filter((t)=>t.trading_symbol.endsWith(suffix));return{trades:rows.length,pnl:rows.reduce((s,t)=>s+(t.pnl??0),0),wins:rows.filter((t)=>(t.pnl??0)>0).length};};return{sharpe,avgHold,expectancy,rr,ce:type("CE"),pe:type("PE")};}
-function holdText(seconds:number|null){if(seconds==null)return"Unavailable";if(seconds<60)return`${Math.round(seconds)}s`;return`${(seconds/60).toFixed(1)}m`;}
-function symbolDrawdown(trades:ControlStatus["paperTrades"],symbol:string){let equity=0,peak=0,draw=0;for(const t of [...trades].filter((x)=>x.trading_symbol===symbol).sort((a,b)=>Date.parse(a.executed_at)-Date.parse(b.executed_at))){equity+=t.pnl??0;peak=Math.max(peak,equity);draw=Math.max(draw,peak-equity);}return draw;}
+type AnalyticsMode = "paper" | "live" | "combined";
+type ExecutionMode = Exclude<AnalyticsMode, "combined">;
 
-function strategyName(order: PaperOrder | undefined) {
-  const event=(order?.signal_event??"").toLowerCase();
-  if(event==="breakout")return"S/R Breakout";
-  if(event==="reversal")return"S/R Reversal";
-  return event?event.replaceAll("_"," ").replace(/\b\w/g,(c)=>c.toUpperCase()):"Unclassified";
+function ratio(value: number | null) {
+  return value === null ? undefined : `${value.toFixed(2)}x`;
 }
-function periodStarts(now=new Date()){const today=new Date(now);today.setHours(0,0,0,0);const week=new Date(today);const day=(week.getDay()+6)%7;week.setDate(week.getDate()-day);const month=new Date(now.getFullYear(),now.getMonth(),1);return{today:today.getTime(),week:week.getTime(),month:month.getTime()};}
-function pnlSince(rows:PaperTrade[],since:number){return rows.filter((t)=>Date.parse(t.executed_at)>=since).reduce((sum,t)=>sum+(t.pnl??0),0);}
-function strategyAnalytics(status:ControlStatus){const byOrder=new Map(status.paperOrders.map((row)=>[row.id,row]));const groups=new Map<string,{strategy:string;mode:string;trades:PaperTrade[]}>();for(const trade of status.paperTrades.filter((row)=>row.pnl!=null)){const order=trade.order_id?byOrder.get(trade.order_id):undefined;const strategy=strategyName(order);const mode=(order?.mode??trade.mode??"paper").toUpperCase();const key=`${mode}:${strategy}`;const group=groups.get(key)??{strategy,mode,trades:[]};group.trades.push(trade);groups.set(key,group);}const starts=periodStarts();return[...groups.values()].map((group)=>{const wins=group.trades.filter((t)=>(t.pnl??0)>0).length;return{...group,today:pnlSince(group.trades,starts.today),week:pnlSince(group.trades,starts.week),month:pnlSince(group.trades,starts.month),total:group.trades.reduce((sum,t)=>sum+(t.pnl??0),0),winRate:group.trades.length?wins/group.trades.length:null};}).sort((a,b)=>b.month-a.month);}
 
-export function AnalyticsPanel({status}:{status:ControlStatus}){const analytics=calculatePaperAnalytics(status.paperTrades,status.paperOrders);const bySymbol=groupPnlBySymbol(status.paperTrades);const extra=extraAnalytics(status);const byStrategy=strategyAnalytics(status);const starts=periodStarts();const realized=status.paperTrades.filter((t)=>t.pnl!=null);const whole={today:pnlSince(realized,starts.today),week:pnlSince(realized,starts.week),month:pnlSince(realized,starts.month),total:realized.reduce((sum,t)=>sum+(t.pnl??0),0)};return <>
-<section className="terminal-metric-grid six"><MetricCard label="Whole realized P&L" value={formatCurrency(whole.total)} detail={`${realized.length} realized trades · PAPER + LIVE`} tone={whole.total>=0?"positive":"negative"}/><MetricCard label="Today" value={formatCurrency(whole.today)} tone={whole.today>=0?"positive":"negative"}/><MetricCard label="This week" value={formatCurrency(whole.week)} tone={whole.week>=0?"positive":"negative"}/><MetricCard label="This month" value={formatCurrency(whole.month)} tone={whole.month>=0?"positive":"negative"}/><MetricCard label="Win rate" value={formatPercent(analytics.winRate)} unavailable={analytics.winRate===null}/><MetricCard label="Maximum drawdown" value={formatCurrency(analytics.maxDrawdown)} tone="negative" unavailable={analytics.maxDrawdown===null}/><MetricCard label="Gross profit" value={formatCurrency(analytics.grossProfit)} tone="positive" unavailable={analytics.grossProfit===null}/><MetricCard label="Gross loss" value={formatCurrency(analytics.grossLoss)} tone="negative" unavailable={analytics.grossLoss===null}/><MetricCard label="Profit factor" value={analytics.profitFactor?.toFixed(2)} unavailable={analytics.profitFactor===null}/><MetricCard label="Expectancy / trade" value={formatCurrency(extra.expectancy)} unavailable={extra.expectancy===null}/><MetricCard label="Avg reward / risk" value={extra.rr!=null?`${extra.rr.toFixed(2)}×`:undefined} unavailable={extra.rr===null}/><MetricCard label="Average hold" value={holdText(extra.avgHold)} unavailable={extra.avgHold===null}/><MetricCard label="Trade-return Sharpe" value={extra.sharpe?.toFixed(2)} unavailable={extra.sharpe===null} detail="Non-annualized realized trade returns"/><MetricCard label="Largest winner" value={formatCurrency(analytics.largestWinner)} tone="positive" unavailable={analytics.largestWinner===null}/><MetricCard label="Largest loser" value={formatCurrency(analytics.largestLoser)} tone="negative" unavailable={analytics.largestLoser===null}/></section>
-<section className="terminal-section card"><div className="section-heading compact"><div><p className="eyebrow">Strategy attribution</p><h2>P&amp;L by strategy</h2></div><span>Today · Week · Month · Total</span></div>{byStrategy.length===0?<EmptyState icon="analytics" title="No strategy P&L yet" description="Breakout and reversal attribution appears after positions are closed."/>:<div className="table-scroll"><table className="data-table"><thead><tr><th>Strategy</th><th>Mode</th><th>Today</th><th>Week</th><th>Month</th><th>Total</th><th>Trades</th><th>Win rate</th></tr></thead><tbody>{byStrategy.map((row)=><tr key={`${row.mode}-${row.strategy}`}><td><strong>{row.strategy}</strong></td><td><span className={`status-badge ${row.mode==="LIVE"?"bad":"warn"}`}>{row.mode}</span></td><td className={`numeric ${row.today>=0?"good":"bad"}`}>{formatCurrency(row.today)}</td><td className={`numeric ${row.week>=0?"good":"bad"}`}>{formatCurrency(row.week)}</td><td className={`numeric ${row.month>=0?"good":"bad"}`}>{formatCurrency(row.month)}</td><td className={`numeric ${row.total>=0?"good":"bad"}`}>{formatCurrency(row.total)}</td><td className="numeric">{row.trades.length}</td><td className="numeric">{row.winRate==null?"—":formatPercent(row.winRate)}</td></tr>)}</tbody><tfoot><tr><td><strong>WHOLE PORTFOLIO</strong></td><td>ALL</td><td className={`numeric ${whole.today>=0?"good":"bad"}`}>{formatCurrency(whole.today)}</td><td className={`numeric ${whole.week>=0?"good":"bad"}`}>{formatCurrency(whole.week)}</td><td className={`numeric ${whole.month>=0?"good":"bad"}`}>{formatCurrency(whole.month)}</td><td className={`numeric ${whole.total>=0?"good":"bad"}`}>{formatCurrency(whole.total)}</td><td className="numeric">{realized.length}</td><td className="numeric">{analytics.winRate==null?"—":formatPercent(analytics.winRate)}</td></tr></tfoot></table></div>}<p className="availability-note">Breakout and reversal are attributed from the persisted entry signal. PAPER and LIVE are kept as separate rows so simulated and broker P&amp;L are never silently mixed.</p></section>
-<section className="dashboard-grid terminal-section"><article className="card span-8"><PerformanceChart trades={status.paperTrades}/></article><article className="card span-4"><div className="section-heading compact"><div><p className="eyebrow">Performance window</p><h2>Realized P&amp;L</h2></div></div><div className="diagnostic-list"><div><span>Today</span><strong>{formatCurrency(whole.today)}</strong></div><div><span>This week</span><strong>{formatCurrency(whole.week)}</strong></div><div><span>This month</span><strong>{formatCurrency(whole.month)}</strong></div><div><span>All loaded history</span><strong>{formatCurrency(whole.total)}</strong></div><div><span>Largest winner</span><strong className="good">{formatCurrency(analytics.largestWinner)}</strong></div><div><span>Largest loser</span><strong className="bad">{formatCurrency(analytics.largestLoser)}</strong></div></div></article></section>
-<section className="dashboard-grid terminal-section"><article className="card span-6"><div className="section-heading compact"><div><p className="eyebrow">Option side</p><h2>CE vs PE performance</h2></div></div><div className="diagnostic-list"><div><span>Calls · {extra.ce.trades} trades</span><strong className={extra.ce.pnl>=0?"good":"bad"}>{formatCurrency(extra.ce.pnl)} · {extra.ce.trades?formatPercent(extra.ce.wins/extra.ce.trades):"—"}</strong></div><div><span>Puts · {extra.pe.trades} trades</span><strong className={extra.pe.pnl>=0?"good":"bad"}>{formatCurrency(extra.pe.pnl)} · {extra.pe.trades?formatPercent(extra.pe.wins/extra.pe.trades):"—"}</strong></div></div></article><article className="card span-6"><div className="section-heading compact"><div><p className="eyebrow">Execution model</p><h2>Fill accounting</h2></div></div><div className="diagnostic-list"><div><span>Paper entry</span><strong>Selected option LTP</strong></div><div><span>Paper exit</span><strong>Observed option-chain LTP</strong></div><div><span>LIVE entry/exit</span><strong>Reconciled Groww average fill</strong></div><div><span>Paper slippage</span><strong>0 by simulation policy</strong></div><div><span>Fees / taxes</span><strong>0 until cost model is configured</strong></div></div></article></section>
-<section className="terminal-section card"><div className="section-heading compact"><div><p className="eyebrow">Breakdown</p><h2>Performance by instrument</h2></div><span>Persisted closed trades</span></div>{bySymbol.length===0?<EmptyState icon="analytics" title="No instrument breakdown yet" description="The comparison table will populate from real closed paper/live trades."/>:<div className="table-scroll"><table className="data-table"><thead><tr><th>Instrument</th><th>Trades</th><th>Win rate</th><th>Net P&amp;L</th><th>Drawdown</th></tr></thead><tbody>{bySymbol.map((row)=><tr key={row.symbol}><td><strong>{row.symbol}</strong></td><td className="numeric">{row.trades}</td><td className="numeric">{formatPercent(row.wins/row.trades)}</td><td className={`numeric ${row.pnl>=0?"good":"bad"}`}>{formatCurrency(row.pnl)}</td><td className="numeric bad">{formatCurrency(symbolDrawdown(status.paperTrades,row.symbol))}</td></tr>)}</tbody></table></div>}<p className="availability-note">The terminal currently loads the latest 500 closed trades; with the configured daily trade cap this comfortably covers day/week/month views. Sharpe remains a non-annualized realized-trade statistic.</p></section>
-</>;}
+function ordersForMode(orders: PaperOrder[], mode: ExecutionMode) {
+  return orders.filter((order) => order.mode === mode);
+}
+
+function StrategyPerformanceCard({
+  strategy,
+  mode,
+  attributed,
+}: {
+  strategy: "breakout" | "reversal";
+  mode: ExecutionMode;
+  attributed: AttributedPaperTrade[];
+}) {
+  const rows = attributed.filter((trade) => trade.strategy === strategy);
+  const today = calculatePerformanceForTimeframe(rows, "today");
+  const week = calculatePerformanceForTimeframe(rows, "week");
+  const month = calculatePerformanceForTimeframe(rows, "month");
+  const all = calculatePerformanceForTimeframe(rows, "all");
+  return <article className="strategy-performance-card">
+    <div><p className="eyebrow">{mode.toUpperCase()} strategy</p><h3>S/R {strategy}</h3></div>
+    <dl className="strategy-periods"><div><dt>Today</dt><dd>{formatCurrency(today.netPnl)}</dd></div><div><dt>Week</dt><dd>{formatCurrency(week.netPnl)}</dd></div><div><dt>Month</dt><dd>{formatCurrency(month.netPnl)}</dd></div><div><dt>All-time</dt><dd>{formatCurrency(all.netPnl)}</dd></div></dl>
+    <div className="strategy-performance-stats"><span>Trades <strong>{all.completedTrades}</strong></span><span>Win rate <strong>{formatPercent(all.winRate)}</strong></span><span>Avg win <strong>{formatCurrency(all.averageWinner)}</strong></span><span>Avg loss <strong>{formatCurrency(all.averageLoser)}</strong></span><span>Profit factor <strong>{all.profitFactor?.toFixed(2) ?? "Unavailable"}</strong></span></div>
+  </article>;
+}
+
+function StrategyTable({
+  paperRows,
+  liveRows,
+  showModes,
+  timeframeLabel,
+}: {
+  paperRows: ReturnType<typeof groupStrategyPerformance>;
+  liveRows: ReturnType<typeof groupStrategyPerformance>;
+  showModes: ExecutionMode[];
+  timeframeLabel: string;
+}) {
+  const rows = showModes.flatMap((mode) => (mode === "paper" ? paperRows : liveRows).map((row) => ({ ...row, mode })));
+  return <section className="card terminal-section"><div className="section-heading compact"><div><p className="eyebrow">Persisted attribution</p><h2>Performance by setup and mode</h2></div><span>{timeframeLabel}</span></div>
+    <div className="table-scroll"><table className="data-table strategy-performance-table"><thead><tr><th>Strategy</th><th>Mode</th><th>Trades</th><th>Win rate</th><th>Net P&amp;L</th><th>Avg P&amp;L</th><th>Profit factor</th><th>Drawdown</th></tr></thead><tbody>
+      {rows.map((row) => <tr key={`${row.strategy}-${row.mode}`}><td><strong>S/R {row.strategy}</strong></td><td><span className={`side-badge ${row.mode}`}>{row.mode.toUpperCase()}</span></td><td className="numeric">{row.metrics.completedTrades}</td><td className="numeric">{formatPercent(row.metrics.winRate)}</td><td className={`numeric ${(row.metrics.netPnl ?? 0) >= 0 ? "good" : "bad"}`}>{formatCurrency(row.metrics.netPnl)}</td><td className="numeric">{formatCurrency(row.metrics.averagePnl)}</td><td className="numeric">{row.metrics.profitFactor?.toFixed(2) ?? "Unavailable"}</td><td className="numeric bad">{formatCurrency(row.metrics.maxDrawdown)}</td></tr>)}
+    </tbody></table></div>
+    <p className="availability-note">Strategy attribution follows each persisted order&apos;s signal event. PAPER simulation and LIVE broker fills remain separate datasets.</p>
+  </section>;
+}
+
+function ModeAnalytics({
+  mode,
+  trades,
+  orders,
+  timeframe,
+  timeframeLabel,
+}: {
+  mode: ExecutionMode;
+  trades: PaperTrade[];
+  orders: PaperOrder[];
+  timeframe: AnalyticsTimeframe;
+  timeframeLabel: string;
+}) {
+  const attributed = useMemo(() => attributePaperTrades(trades, orders), [orders, trades]);
+  const selectedTrades = useMemo(() => filterTradesByTimeframe(trades, timeframe), [timeframe, trades]);
+  const analytics = useMemo(() => calculatePerformanceForTimeframe(trades, timeframe), [timeframe, trades]);
+  const strategyRows = useMemo(() => groupStrategyPerformance(attributed, timeframe), [attributed, timeframe]);
+  const modeLabel = mode.toUpperCase();
+
+  return <>
+    <section className="terminal-metric-grid six analytics-metrics" aria-label={`${timeframeLabel} ${mode} performance`}>
+      <MetricCard label="Net P&L" value={formatCurrency(analytics.netPnl)} detail={`${analytics.completedTrades} realized ${modeLabel} trades`} tone={(analytics.netPnl ?? 0) >= 0 ? "positive" : "negative"} unavailable={analytics.netPnl === null} />
+      <MetricCard label="Gross profit" value={formatCurrency(analytics.grossProfit)} tone="positive" unavailable={analytics.grossProfit === null} />
+      <MetricCard label="Gross loss" value={formatCurrency(analytics.grossLoss)} tone="negative" unavailable={analytics.grossLoss === null} />
+      <MetricCard label="Win rate" value={formatPercent(analytics.winRate)} unavailable={analytics.winRate === null} />
+      <MetricCard label="Profit factor" value={analytics.profitFactor?.toFixed(2)} unavailable={analytics.profitFactor === null} />
+      <MetricCard label="Maximum drawdown" value={formatCurrency(analytics.maxDrawdown)} tone="negative" unavailable={analytics.maxDrawdown === null} />
+      <MetricCard label="Average P&L / trade" value={formatCurrency(analytics.averagePnl)} unavailable={analytics.averagePnl === null} />
+      <MetricCard label="Expectancy" value={formatCurrency(analytics.expectancy)} unavailable={analytics.expectancy === null} />
+      <MetricCard label="Average win" value={formatCurrency(analytics.averageWinner)} tone="positive" unavailable={analytics.averageWinner === null} />
+      <MetricCard label="Average loss" value={formatCurrency(analytics.averageLoser)} tone="negative" unavailable={analytics.averageLoser === null} />
+      <MetricCard label="Reward / risk" value={ratio(analytics.rewardRisk)} unavailable={analytics.rewardRisk === null} />
+      <MetricCard label="Current streak" value={analytics.winningStreak ? `${analytics.winningStreak} winning` : analytics.losingStreak ? `${analytics.losingStreak} losing` : "None"} detail={`Newest realized ${modeLabel} trades`} />
+    </section>
+
+    <section className="analytics-chart-grid terminal-section">
+      <article className="card analytics-chart-wide"><div className="section-heading compact"><div><p className="eyebrow">{modeLabel} equity curve</p><h2>Cumulative realized P&amp;L</h2></div><span>{timeframeLabel} · {modeLabel}</span></div><PerformanceChart trades={selectedTrades} /></article>
+      <article className="card"><div className="section-heading compact"><div><p className="eyebrow">Distribution</p><h2>Wins vs losses</h2></div></div><WinLossDistribution metrics={analytics} /></article>
+      <article className="card"><div className="section-heading compact"><div><p className="eyebrow">Daily result</p><h2>P&amp;L by day</h2></div></div><DailyPnlChart trades={selectedTrades} /></article>
+      <article className="card"><div className="section-heading compact"><div><p className="eyebrow">Attribution</p><h2>Strategy P&amp;L</h2></div></div><StrategyPnlChart rows={strategyRows} /></article>
+    </section>
+
+    <section className="strategy-performance-grid terminal-section"><StrategyPerformanceCard strategy="breakout" mode={mode} attributed={attributed} /><StrategyPerformanceCard strategy="reversal" mode={mode} attributed={attributed} /></section>
+    <StrategyTable paperRows={mode === "paper" ? strategyRows : []} liveRows={mode === "live" ? strategyRows : []} showModes={[mode]} timeframeLabel={timeframeLabel} />
+  </>;
+}
+
+function ComparisonCard({ label, metrics }: { label: string; metrics: PerformanceMetrics }) {
+  return <article><span>{label}</span><strong>{formatCurrency(metrics.netPnl)}</strong><small>{metrics.completedTrades} realized trades · {formatPercent(metrics.winRate)} win rate</small></article>;
+}
+
+export function AnalyticsPanel({ status }: { status: ControlStatus }) {
+  const [timeframe, setTimeframe] = useState<AnalyticsTimeframe>("today");
+  const [mode, setMode] = useState<AnalyticsMode>("paper");
+  const paperTrades = useMemo(() => filterTradesByMode(status.paperTrades, "paper"), [status.paperTrades]);
+  const liveTrades = useMemo(() => filterTradesByMode(status.paperTrades, "live"), [status.paperTrades]);
+  const paperOrders = useMemo(() => ordersForMode(status.paperOrders, "paper"), [status.paperOrders]);
+  const liveOrders = useMemo(() => ordersForMode(status.paperOrders, "live"), [status.paperOrders]);
+  const paperAttributed = useMemo(() => attributePaperTrades(paperTrades, paperOrders), [paperOrders, paperTrades]);
+  const liveAttributed = useMemo(() => attributePaperTrades(liveTrades, liveOrders), [liveOrders, liveTrades]);
+  const paperMetrics = useMemo(() => calculatePerformanceForTimeframe(paperTrades, timeframe), [paperTrades, timeframe]);
+  const liveMetrics = useMemo(() => calculatePerformanceForTimeframe(liveTrades, timeframe), [liveTrades, timeframe]);
+  const paperStrategyRows = useMemo(() => groupStrategyPerformance(paperAttributed, timeframe), [paperAttributed, timeframe]);
+  const liveStrategyRows = useMemo(() => groupStrategyPerformance(liveAttributed, timeframe), [liveAttributed, timeframe]);
+  const timeframeLabel = timeframe === "all" ? "All time" : timeframe[0].toUpperCase() + timeframe.slice(1);
+
+  return <>
+    <section className="analytics-controls" aria-label="Analytics filters">
+      <div className="segmented-control large">{(["paper", "live", "combined"] as AnalyticsMode[]).map((item) => <button type="button" key={item} className={mode === item ? "active" : ""} aria-pressed={mode === item} onClick={() => setMode(item)}>{item === "combined" ? "Combined view" : item}</button>)}</div>
+      <div className="segmented-control large">{(["today", "week", "month", "all"] as AnalyticsTimeframe[]).map((item) => <button type="button" key={item} className={timeframe === item ? "active" : ""} aria-pressed={timeframe === item} onClick={() => setTimeframe(item)}>{item}</button>)}</div>
+    </section>
+
+    {mode === "combined" ? <>
+      <section className="analytics-mode-comparison">
+        <ComparisonCard label={`PAPER · ${timeframeLabel}`} metrics={paperMetrics} />
+        <ComparisonCard label={`LIVE · ${timeframeLabel}`} metrics={liveMetrics} />
+        <p>Side-by-side only: simulated PAPER results and broker-reconciled LIVE fills are never summed into one P&amp;L number.</p>
+      </section>
+      <section className="analytics-chart-grid terminal-section">
+        <article className="card"><div className="section-heading compact"><div><p className="eyebrow">PAPER equity</p><h2>Simulated fills</h2></div><span>{paperMetrics.completedTrades} realized</span></div><PerformanceChart trades={filterTradesByTimeframe(paperTrades, timeframe)} /></article>
+        <article className="card"><div className="section-heading compact"><div><p className="eyebrow">LIVE equity</p><h2>Broker fills</h2></div><span>{liveMetrics.completedTrades} realized</span></div><PerformanceChart trades={filterTradesByTimeframe(liveTrades, timeframe)} /></article>
+      </section>
+      <StrategyTable paperRows={paperStrategyRows} liveRows={liveStrategyRows} showModes={["paper", "live"]} timeframeLabel={timeframeLabel} />
+    </> : <ModeAnalytics mode={mode} trades={mode === "paper" ? paperTrades : liveTrades} orders={mode === "paper" ? paperOrders : liveOrders} timeframe={timeframe} timeframeLabel={timeframeLabel} />}
+  </>;
+}
