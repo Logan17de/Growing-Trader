@@ -5,17 +5,17 @@ import logging
 from typing import Any
 
 from .control_plane import OracleControlAgent
-from .paper_runner import PaperEngineRuntime
+from .managed_runtime import ManagedPaperEngineRuntime
 
 logger = logging.getLogger(__name__)
 
 
 class LiveOracleControlAgent(OracleControlAgent):
-    """Oracle control worker with a separately startable/stoppable paper engine."""
+    """Oracle control worker with a separately managed paper engine."""
 
     def __init__(self, control: Any, **kwargs: Any) -> None:
         super().__init__(control, **kwargs)
-        self.paper_runtime = PaperEngineRuntime(control)
+        self.paper_runtime = ManagedPaperEngineRuntime(control)
 
     def _write_paper_status(self) -> None:
         status = self.paper_runtime.status()
@@ -49,6 +49,7 @@ class LiveOracleControlAgent(OracleControlAgent):
 
         command_id = str(command["id"])
         command_name = str(command["command"])
+        payload = dict(command.get("payload") or {})
         stop_requested = command_name == "STOP"
         self.state = f"running:{command_name.lower()}"
         self._write_heartbeat()
@@ -61,6 +62,27 @@ class LiveOracleControlAgent(OracleControlAgent):
                 result = self._start_paper_engine()
             elif command_name == "STOP_PAPER_ENGINE":
                 result = self._stop_paper_engine()
+            elif command_name == "EXIT_PAPER_POSITION":
+                result = self.paper_runtime.manual_exit(self._groww_client)
+            elif command_name == "PARTIAL_EXIT_PAPER_POSITION":
+                result = self.paper_runtime.partial_exit(int(payload["quantity"]), self._groww_client)
+            elif command_name == "SET_PAPER_STOP":
+                result = self.paper_runtime.set_stop(float(payload["stopPrice"]))
+            elif command_name == "SET_PAPER_TRAILING":
+                result = self.paper_runtime.set_trailing(
+                    bool(payload.get("enabled")),
+                    float(payload["activationPct"]) if payload.get("activationPct") is not None else None,
+                    float(payload["drawdownPct"]) if payload.get("drawdownPct") is not None else None,
+                )
+            elif command_name == "KILL_SWITCH":
+                result = self.paper_runtime.set_kill_switch(
+                    bool(payload.get("enabled")),
+                    close_position=bool(payload.get("closePosition", False)),
+                    reason=str(payload.get("reason") or "Dashboard kill switch") if payload.get("enabled") else None,
+                    client_factory=self._groww_client,
+                )
+            elif command_name == "RUN_REPLAY":
+                result = self.paper_runtime.run_replay(payload)
             elif command_name == "STOP":
                 self.paper_runtime.stop()
                 self._write_paper_status()

@@ -22,7 +22,7 @@ function unavailableStatus(message: string): ControlStatus {
   };
 }
 
-export function useTerminalStatus(pollIntervalMs = 3000) {
+export function useTerminalStatus(defaultPollIntervalMs = 3000) {
   const [auth, setAuth] = useState<TerminalAuthState>("checking");
   const [status, setStatus] = useState<ControlStatus | null>(null);
   const [error, setError] = useState("");
@@ -73,6 +73,7 @@ export function useTerminalStatus(pollIntervalMs = 3000) {
       .catch(() => setAuth("guest"));
   }, [refresh]);
 
+  const pollIntervalMs = status?.terminalPreferences?.refresh_interval_ms ?? defaultPollIntervalMs;
   useEffect(() => {
     if (auth !== "ready" || pollIntervalMs <= 0) return;
     const timer = window.setInterval(() => void refresh(true), pollIntervalMs);
@@ -82,9 +83,9 @@ export function useTerminalStatus(pollIntervalMs = 3000) {
   useEffect(() => {
     if (auth !== "ready") return;
     void refreshTradingData();
-    const timer = window.setInterval(() => void refreshTradingData(), 15_000);
+    const timer = window.setInterval(() => void refreshTradingData(), Math.max(pollIntervalMs * 5, 10_000));
     return () => window.clearInterval(timer);
-  }, [auth, refreshTradingData]);
+  }, [auth, pollIntervalMs, refreshTradingData]);
 
   const logout = useCallback(async () => {
     await fetch("/api/auth/logout", { method: "POST" });

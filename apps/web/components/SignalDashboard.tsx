@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ConfirmDialog } from "@/components/terminal/ConfirmDialog";
-import { BackendUnavailable, EmptyState } from "@/components/terminal/EmptyState";
+import { EmptyState } from "@/components/terminal/EmptyState";
 import { BrandMark, Icon } from "@/components/terminal/Icon";
 import { MetricCard } from "@/components/terminal/MetricCard";
 import { PerformanceChart } from "@/components/terminal/PerformanceChart";
@@ -15,7 +15,7 @@ import { calculatePaperAnalytics } from "@/lib/terminalAnalytics";
 import type { ControlCommand, ControlStatus, TradingDataSnapshot } from "@/lib/terminalTypes";
 
 type Confirmation =
-  | { kind: "command"; command: "STOP_PAPER_ENGINE" | "STOP" }
+  | { kind: "command"; command: "STOP_PAPER_ENGINE" | "STOP" | "EXIT_PAPER_POSITION" | "KILL_SWITCH"; payload?: Record<string, unknown> }
   | { kind: "level"; id: string; name: string }
   | null;
 
@@ -71,18 +71,19 @@ export default function SignalDashboard() {
       .catch(() => setAuth("guest"));
   }, [loadStatus]);
 
+  const refreshMs = status?.terminalPreferences?.refresh_interval_ms ?? 3000;
   useEffect(() => {
     if (auth !== "ready") return;
-    const timer = window.setInterval(() => void loadStatus(), 3000);
+    const timer = window.setInterval(() => void loadStatus(), refreshMs);
     return () => window.clearInterval(timer);
-  }, [auth, loadStatus]);
+  }, [auth, loadStatus, refreshMs]);
 
   useEffect(() => {
     if (auth !== "ready") return;
     void loadTradingData();
-    const timer = window.setInterval(() => void loadTradingData(), 15_000);
+    const timer = window.setInterval(() => void loadTradingData(), Math.max(refreshMs * 5, 10_000));
     return () => window.clearInterval(timer);
-  }, [auth, loadTradingData]);
+  }, [auth, loadTradingData, refreshMs]);
 
   async function login(event: FormEvent) {
     event.preventDefault(); setBusy("login"); setNotice("");
@@ -122,12 +123,13 @@ export default function SignalDashboard() {
     finally { setBusy(""); setConfirmation(null); }
   }
 
-  async function command(commandName: ControlCommand) {
+  async function command(commandName: ControlCommand, payload: Record<string, unknown> = {}) {
     setBusy(commandName); setNotice("");
     try {
-      const result = await jsonRequest<{ duplicate?: boolean }>("/api/control/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command: commandName }) });
+      const result = await jsonRequest<{ duplicate?: boolean }>("/api/control/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command: commandName, payload }) });
       setNotice(result.duplicate ? `${commandName.replaceAll("_", " ")} is already queued or running.` : `${commandName.replaceAll("_", " ")} queued for the Oracle worker.`);
       await loadStatus();
+      await loadTradingData();
     } catch (reason) { setNotice(reason instanceof Error ? reason.message : "Command failed"); }
     finally { setBusy(""); setConfirmation(null); }
   }
@@ -151,15 +153,22 @@ export default function SignalDashboard() {
   const oracleState = worker.state === "stopped" ? "STOPPED" : worker.online ? "ONLINE" : worker.stale ? "STALE" : "OFFLINE";
   const oracleTone = worker.online ? "good" : worker.stale ? "warn" : "bad";
   const paperTone = paper.state === "error" ? "bad" : paper.running ? "good" : "warn";
+  const killEnabled = Boolean(status?.riskControl?.kill_switch_enabled ?? paper.kill_switch_enabled);
+  const strategyEnabled = status?.strategyState?.enabled ?? paper.strategy_enabled ?? true;
   const canBrokerTest = Boolean(worker.online && status?.credentials.configured && !busy);
-  const canStartPaper = Boolean(worker.online && status?.credentials.configured && !paper.running && !busy);
+  const canStartPaper = Boolean(worker.online && status?.credentials.configured && !paper.running && !busy && !killEnabled && strategyEnabled);
   const canStopPaper = Boolean(worker.online && paper.running && !busy);
+  const canExitPosition = Boolean(worker.online && paper.open_paper_position && !busy);
 
   const confirmationCopy = confirmation?.kind === "level"
     ? { title: `Remove ${confirmation.name}?`, description: "This deletes the persisted strategy level. The signal engine will no longer receive it on subsequent reads.", label: "Remove level", busy: busy === `delete-${confirmation.id}` }
     : confirmation?.command === "STOP"
       ? { title: "Stop the Oracle control agent?", description: "The worker will stop polling commands and updating market status until it is restarted outside the web application.", label: "Stop Oracle", busy: busy === "STOP" }
-      : { title: "Pause the paper engine?", description: "This stops paper strategy processing through the existing command queue. It does not manually close an open research position.", label: "Pause paper engine", busy: busy === "STOP_PAPER_ENGINE" };
+      : confirmation?.command === "EXIT_PAPER_POSITION"
+        ? { title: "Close the current paper position?", description: "Oracle will take the latest available option mark, apply the configured paper slippage/fee model, close the persisted paper position and record the realized trade.", label: "Close paper position", busy: busy === "EXIT_PAPER_POSITION" }
+        : confirmation?.command === "KILL_SWITCH"
+          ? { title: "Engage the paper kill switch?", description: "The persistent safety state is set immediately. New entries stay blocked across restarts and Oracle will attempt to close the current paper position if one exists.", label: "Engage kill switch", busy: busy === "KILL_SWITCH" }
+          : { title: "Pause the paper engine?", description: "This stops paper strategy processing through the existing command queue. It does not manually close an open research position.", label: "Pause paper engine", busy: busy === "STOP_PAPER_ENGINE" };
   const noticeIsError = /required|failed|could not|offline|unauthorized|error/i.test(notice);
 
   return <TerminalShell activeRoute="dashboard" status={status} onLogout={logout}>
@@ -170,15 +179,15 @@ export default function SignalDashboard() {
 
     <section className="terminal-metric-grid five dashboard-kpis" aria-label="Trading performance metrics">
       <MetricCard label="Today's P&L" value={formatCurrency(analytics.todayPnl)} detail={`${analytics.tradesToday} paper trades today`} tone={(analytics.todayPnl ?? 0) >= 0 ? "positive" : "negative"} unavailable={analytics.todayPnl === null} />
-      <MetricCard label="Capital deployed" value={formatCurrency(currentExposure)} detail="Open position at entry premium" unavailable={currentExposure === null} />
+      <MetricCard label="Capital deployed" value={formatCurrency(currentExposure)} detail="Open position at simulated entry fill" unavailable={currentExposure === null} />
       <MetricCard label="Current exposure" value={formatCurrency(currentExposure)} detail="Paper premium exposure" icon="shield" unavailable={currentExposure === null} />
       <MetricCard label="Active positions" value={paper.open_paper_position ? "1" : "0"} detail="One-position rule" icon="positions" />
-      <MetricCard label="Active strategies" value={paper.running ? "1" : "0"} detail={paper.state ?? "Unknown state"} icon="strategy" />
+      <MetricCard label="Active strategies" value={strategyEnabled ? "1" : "0"} detail={`${strategyEnabled ? "Enabled" : "Deactivated"} · ${paper.state ?? "Unknown"}`} icon="strategy" />
       <MetricCard label="Weekly P&L" value={formatCurrency(analytics.weekPnl)} unavailable={analytics.weekPnl === null} />
       <MetricCard label="Monthly P&L" value={formatCurrency(analytics.monthPnl)} unavailable={analytics.monthPnl === null} />
       <MetricCard label="Realized P&L" value={formatCurrency(analytics.totalPnl)} unavailable={analytics.totalPnl === null} />
-      <MetricCard label="Unrealized P&L" unavailable detail="Current option LTP is not exposed" />
-      <MetricCard label="Available capital" unavailable detail="Account-equity snapshot is not exposed" />
+      <MetricCard label="Unrealized P&L" value={formatCurrency(paper.unrealized_pnl)} tone={(paper.unrealized_pnl ?? 0) >= 0 ? "positive" : "negative"} unavailable={typeof paper.unrealized_pnl !== "number"} detail={typeof paper.current_option_ltp === "number" ? `Option LTP ${formatNumber(paper.current_option_ltp)}` : "Awaiting option mark"} />
+      <MetricCard label="Available capital" value={formatCurrency(paper.available_capital)} unavailable={typeof paper.available_capital !== "number"} detail={typeof paper.account_equity === "number" ? `Paper equity ${formatCurrency(paper.account_equity)}` : "Awaiting runtime state"} />
       <MetricCard label="Win rate" value={formatPercent(analytics.winRate)} unavailable={analytics.winRate === null} />
       <MetricCard label="Largest winner" value={formatCurrency(analytics.largestWinner)} tone="positive" unavailable={analytics.largestWinner === null} />
       <MetricCard label="Largest loser" value={formatCurrency(analytics.largestLoser)} tone="negative" unavailable={analytics.largestLoser === null} />
@@ -186,7 +195,7 @@ export default function SignalDashboard() {
       <MetricCard label="Trades today" value={String(analytics.tradesToday)} detail="Persisted paper orders" icon="orders" />
     </section>
 
-    <section className="command-bar terminal-section" aria-label="Strategy controls"><div><p className="eyebrow">Execution controls</p><h2>Strategy safety</h2><p>Only allow-listed paper commands are enabled.</p></div><div className="command-actions"><button className="secondary" type="button" onClick={() => setConfirmation({ kind: "command", command: "STOP_PAPER_ENGINE" })} disabled={!canStopPaper}><Icon name="stop" />Pause all</button><button className="primary" type="button" onClick={() => void command("START_PAPER_ENGINE")} disabled={!canStartPaper}>{busy === "START_PAPER_ENGINE" ? <Icon name="refresh" className="spin" /> : <Icon name="activity" />}Resume strategies</button><button className="danger" type="button" disabled>Close all positions</button><button className="kill-switch compact" type="button" disabled><Icon name="shield" /><span><strong>KILL SWITCH</strong><small>Backend unavailable</small></span></button></div></section>
+    <section className="command-bar terminal-section" aria-label="Strategy controls"><div><p className="eyebrow">Execution controls</p><h2>Strategy safety</h2><p>All enabled controls route through the authenticated paper-only command queue.</p></div><div className="command-actions"><button className="secondary" type="button" onClick={() => setConfirmation({ kind: "command", command: "STOP_PAPER_ENGINE" })} disabled={!canStopPaper}><Icon name="stop" />Pause all</button><button className="primary" type="button" onClick={() => void command("START_PAPER_ENGINE")} disabled={!canStartPaper}>{busy === "START_PAPER_ENGINE" ? <Icon name="refresh" className="spin" /> : <Icon name="activity" />}Resume strategies</button><button className="danger" type="button" onClick={() => setConfirmation({ kind: "command", command: "EXIT_PAPER_POSITION" })} disabled={!canExitPosition}>Close all positions</button>{killEnabled ? <button className="primary" type="button" onClick={() => void command("KILL_SWITCH", { enabled: false })} disabled={Boolean(busy)}><Icon name="shield" />Reset kill switch</button> : <button className="kill-switch compact" type="button" onClick={() => setConfirmation({ kind: "command", command: "KILL_SWITCH", payload: { enabled: true, closePosition: true, reason: "Emergency kill switch engaged from dashboard" } })} disabled={Boolean(busy)}><Icon name="shield" /><span><strong>KILL SWITCH</strong><small>Block entries + close paper position</small></span></button>}</div></section>
 
     <section className="dashboard-grid terminal-section">
       <article className="card span-8"><PerformanceChart trades={status?.paperTrades ?? []} /></article>
@@ -199,7 +208,7 @@ export default function SignalDashboard() {
     </section>
 
     <section className="dashboard-grid terminal-section">
-      <article className="card span-7"><div className="section-heading compact"><div><p className="eyebrow">Open inventory</p><h2>Current position</h2></div><Link href="/positions" className="inline-link">All positions <Icon name="arrow-right" /></Link></div>{!paper.open_paper_position ? <EmptyState icon="positions" title="No open paper position" description="A position appears only after a real persisted signal passes risk checks." /> : <div className="table-scroll"><table className="data-table"><thead><tr><th>Instrument</th><th>Qty</th><th>Entry</th><th>LTP</th><th>Unrealized P&amp;L</th><th>Opened</th></tr></thead><tbody><tr><td><strong>{paper.open_paper_position.trading_symbol}</strong></td><td className="numeric">{formatNumber(paper.open_paper_position.quantity, 0)}</td><td className="numeric">{formatNumber(paper.open_paper_position.entry_price)}</td><td className="unavailable-cell">Unavailable</td><td className="unavailable-cell">Unavailable</td><td>{formatDateTime(paper.open_paper_position.opened_at)}</td></tr></tbody></table></div>}</article>
+      <article className="card span-7"><div className="section-heading compact"><div><p className="eyebrow">Open inventory</p><h2>Current position</h2></div><Link href="/positions" className="inline-link">Manage position <Icon name="arrow-right" /></Link></div>{!paper.open_paper_position ? <EmptyState icon="positions" title="No open paper position" description="A position appears only after a real persisted signal passes risk checks." /> : <div className="table-scroll"><table className="data-table"><thead><tr><th>Instrument</th><th>Qty</th><th>Entry</th><th>LTP</th><th>Unrealized P&amp;L</th><th>Stop</th><th>Target</th><th>Opened</th></tr></thead><tbody><tr><td><strong>{paper.open_paper_position.trading_symbol}</strong></td><td className="numeric">{formatNumber(paper.open_paper_position.quantity, 0)}</td><td className="numeric">{formatNumber(paper.open_paper_position.entry_price)}</td><td className="numeric">{formatNumber(paper.current_option_ltp)}</td><td className={`numeric ${(paper.unrealized_pnl ?? 0) >= 0 ? "good" : "bad"}`}>{formatCurrency(paper.unrealized_pnl)}</td><td className="numeric">{formatNumber(paper.stop_price)}</td><td className="numeric">{formatNumber(paper.target_price)}</td><td>{formatDateTime(paper.open_paper_position.opened_at)}</td></tr></tbody></table></div>}</article>
       <article className="card span-5"><div className="section-heading compact"><div><p className="eyebrow">Recent orders</p><h2>Paper lifecycle</h2></div><Link href="/orders" className="inline-link">All orders <Icon name="arrow-right" /></Link></div>{!status?.paperOrders.length ? <EmptyState compact icon="orders" title="No paper orders" description="No order records are persisted yet." /> : <div className="compact-order-list">{status.paperOrders.slice(0, 5).map((order) => <div key={order.id}><span className={`side-badge ${order.side.toLowerCase()}`}>{order.side}</span><div><strong>{order.trading_symbol}</strong><small>{formatDateTime(order.created_at)}</small></div><div><strong>{formatNumber(order.quantity, 0)}</strong><small>{order.status}</small></div></div>)}</div>}</article>
     </section>
 
@@ -210,9 +219,9 @@ export default function SignalDashboard() {
 
     <section className="terminal-section card"><div className="section-heading compact"><div><p className="eyebrow">Strategy inputs</p><h2>Support &amp; resistance levels</h2></div><span>{status?.levels.length ?? 0} persisted levels</span></div><form className="level-form" onSubmit={saveLevel}><label className="field"><span>Name</span><input value={levelName} onChange={(event) => setLevelName(event.target.value)} placeholder="S1 / R1" required /></label><label className="field"><span>Type</span><select value={levelKind} onChange={(event) => setLevelKind(event.target.value as "support" | "resistance")}><option value="support">Support</option><option value="resistance">Resistance</option></select></label><label className="field"><span>Price</span><input type="number" inputMode="decimal" step="0.05" min="0" value={levelPrice} onChange={(event) => setLevelPrice(event.target.value)} placeholder="25,000" required /></label><button className="primary add-button" disabled={busy === "level"}>{busy === "level" ? <Icon name="refresh" className="spin" /> : <Icon name="plus" />}{busy === "level" ? "Saving…" : "Add level"}</button></form>{!status?.levels.length ? <EmptyState compact icon="layers" title="No levels configured" description="Add the first support or resistance level above." /> : <div className="table-scroll"><table className="data-table"><thead><tr><th>Name</th><th>Type</th><th>Price</th><th>Source</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{status.levels.map((level) => <tr key={level.id}><td><strong>{level.name}</strong></td><td><span className={`level-kind ${level.kind}`}>{level.kind}</span></td><td className="numeric">{formatNumber(Number(level.price))}</td><td>{level.source}</td><td><span className={`status-badge ${level.enabled ? "good" : "neutral"}`}><span className={`status-dot ${level.enabled ? "good" : "neutral"}`} />{level.enabled ? "Enabled" : "Disabled"}</span></td><td><button type="button" className="mini-danger" onClick={() => setConfirmation({ kind: "level", id: level.id, name: level.name })} disabled={busy === `delete-${level.id}`} aria-label={`Remove ${level.name}`}><Icon name="trash" /></button></td></tr>)}</tbody></table></div>}</section>
 
-    <section className="terminal-section card"><BackendUnavailable title="Full emergency kill behavior is intentionally disabled" description="The repository has no execution command that atomically blocks entries, cancels orders, and closes positions. Enabling a UI-only kill switch would bypass or misrepresent the risk pipeline." /></section>
+    <section className="terminal-section card"><div className="section-heading compact"><div><p className="eyebrow">Emergency state</p><h2>{killEnabled ? "Kill switch engaged" : "Paper safety ready"}</h2></div><Link href="/risk" className="inline-link">Open risk controls <Icon name="arrow-right" /></Link></div><div className="diagnostic-list"><div><span>Persistent kill switch</span><strong className={killEnabled ? "bad" : "good"}>{killEnabled ? "ENGAGED" : "Ready"}</strong></div><div><span>Strategy entries</span><strong>{strategyEnabled && !killEnabled ? "Eligible when risk passes" : "Blocked"}</strong></div><div><span>Paper execution</span><strong>Only</strong></div><div><span>Live Groww placement</span><strong>Not implemented</strong></div></div><p className="availability-note">The kill switch is a real DB-backed paper safety state. It blocks new entries across restarts and can close the current persisted paper position; it never sends a live broker order.</p></section>
     <footer className="dashboard-footer"><span><span className="status-dot good" />Authenticated control plane</span><span>Paper execution · No live order implementation</span></footer>
 
-    <ConfirmDialog open={confirmation !== null} title={confirmationCopy.title} description={confirmationCopy.description} confirmLabel={confirmationCopy.label} busy={confirmationCopy.busy} onCancel={() => setConfirmation(null)} onConfirm={() => { if (confirmation?.kind === "level") void removeLevel(confirmation.id); else if (confirmation) void command(confirmation.command); }} />
+    <ConfirmDialog open={confirmation !== null} title={confirmationCopy.title} description={confirmationCopy.description} confirmLabel={confirmationCopy.label} busy={confirmationCopy.busy} onCancel={() => setConfirmation(null)} onConfirm={() => { if (confirmation?.kind === "level") void removeLevel(confirmation.id); else if (confirmation) void command(confirmation.command, confirmation.payload ?? {}); }} />
   </TerminalShell>;
 }
