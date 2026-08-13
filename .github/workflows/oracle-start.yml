@@ -1,0 +1,112 @@
+name: Oracle Market Start
+
+on:
+  schedule:
+    - cron: "10 9 * * 1-5"
+      timezone: "Asia/Kolkata"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-lifecycle
+  cancel-in-progress: false
+
+env:
+  ORACLE_HOST: ${{ vars.ORACLE_HOST || '193.123.166.128' }}
+  ORACLE_USER: ${{ vars.ORACLE_USER || 'ubuntu' }}
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client
+
+      - name: Apply pending Supabase migrations
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: bash scripts/apply_remote_migrations.sh
+
+      - name: Install OCI CLI
+        run: python -m pip install --disable-pip-version-check oci-cli
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_API_PRIVATE_KEY" > ~/.oci/api_key.pem
+          chmod 600 ~/.oci/api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=${HOME}/.oci/api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+
+      - name: Start Oracle instance
+        env:
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          set -euo pipefail
+          state="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."lifecycle-state"' --raw-output)"
+          echo "Current OCI state: $state"
+          if [[ "$state" != "RUNNING" ]]; then
+            oci compute instance action --instance-id "$OCI_INSTANCE_OCID" --action START >/dev/null
+          fi
+          oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --wait-for-state RUNNING --max-wait-seconds 420 >/dev/null
+
+      - name: Configure Oracle SSH key
+        env:
+          ORACLE_SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$ORACLE_SSH_PRIVATE_KEY" > ~/.ssh/oracle
+          chmod 600 ~/.ssh/oracle
+
+      - name: Wait for SSH
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if ssh -i ~/.ssh/oracle -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" true 2>/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Oracle SSH did not become available" >&2
+          exit 1
+
+      - name: Update repo and install systemd service
+        run: |
+          ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
+            'cd /home/ubuntu/Growing-Trader && git fetch origin main && git reset --hard origin/main && sudo bash scripts/install_oracle_service.sh'
+
+      - name: Start selected trading engine when safe
+        run: |
+          ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
+            'cd /home/ubuntu/Growing-Trader && set -a && source /home/ubuntu/api.env && set +a && .venv/bin/nifty-engine scheduled-start'
+
+      - name: Summary
+        run: |
+          {
+            echo '### Oracle morning automation complete'
+            echo '- Supabase migrations applied'
+            echo '- OCI instance is RUNNING'
+            echo '- systemd control agent installed/updated and enabled'
+            echo '- PAPER auto-starts; LIVE auto-starts only when it was already explicitly armed'
+          } >> "$GITHUB_STEP_SUMMARY"

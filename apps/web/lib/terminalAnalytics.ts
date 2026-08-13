@@ -59,6 +59,10 @@ export function filterTradesByTimeframe<T extends PaperTrade>(trades: T[], timef
   return trades.filter((trade) => trade.pnl !== null && (!start || new Date(trade.executed_at) >= start));
 }
 
+export function filterTradesByMode<T extends PaperTrade>(trades: T[], mode: "paper" | "live"): T[] {
+  return trades.filter((trade) => (trade.mode ?? "paper") === mode);
+}
+
 function pnlSince(trades: PaperTrade[], start: Date): number | null {
   const values = trades.filter((trade) => new Date(trade.executed_at) >= start && trade.pnl !== null).map((trade) => trade.pnl as number);
   return values.length ? values.reduce((sum, value) => sum + value, 0) : null;

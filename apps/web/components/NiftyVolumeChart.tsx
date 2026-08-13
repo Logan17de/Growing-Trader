@@ -80,7 +80,7 @@ export default function NiftyVolumeChart({ points }: { points: NiftyVolumePoint[
     return (
       <div className="volume-chart-empty">
         <strong>No minute-volume session yet</strong>
-        <span>Run the paper engine to collect aggregate NIFTY-50 constituent volume. No values are simulated.</span>
+        <span>Run the selected PAPER or LIVE engine to collect aggregate NIFTY-50 constituent volume. No values are simulated.</span>
       </div>
     );
   }

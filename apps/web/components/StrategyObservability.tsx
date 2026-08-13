@@ -24,7 +24,10 @@ export default function StrategyObservability({ embedded = false, signal = null,
     }
     return [...output.entries()];
   }, [data]);
-  const paper = paperEngine ?? data?.paperEngine ?? {};
+  const paper: PaperEngineStatus = paperEngine ?? data?.paperEngine ?? {};
+  const mode = paper.mode ?? "paper";
+  const activePosition = paper.open_position ?? paper.open_paper_position;
+  const executionLabel = mode === "live" ? (paper.live_armed ? "LIVE · ARMED" : "LIVE · DISARMED") : "PAPER";
 
   return <section className={embedded ? "strategy-research-embed" : "strategy-research-standalone"}>
     {!embedded && <header className="research-standalone-header">
@@ -33,6 +36,13 @@ export default function StrategyObservability({ embedded = false, signal = null,
     </header>}
 
     {error && <div className="notice error" role="alert">{error === "unauthorized" ? "Sign in from the main dashboard first." : error}</div>}
+
+    <section className="market-secondary-grid strategy-runtime-truth" aria-label="Current strategy execution state">
+      <div><span>Execution mode</span><strong className={mode === "live" ? (paper.live_armed ? "bad" : "warn") : "good"}>{executionLabel}</strong><small>{mode === "live" ? "Groww broker path" : "Simulated fills"}</small></div>
+      <div><span>Engine</span><strong>{paper.running ? "RUNNING" : "PAUSED"}</strong><small>{paper.state ?? "State unavailable"}</small></div>
+      <div><span>Kill switch</span><strong className={paper.kill_switch ? "bad" : "good"}>{paper.kill_switch ? "ACTIVE" : "CLEAR"}</strong><small>{paper.block_new_entries ? "New entries blocked" : "Normal risk policy"}</small></div>
+      <div><span>Current position</span><strong>{activePosition?.trading_symbol ?? "NONE"}</strong><small>{activePosition?.quantity ? `${activePosition.quantity} quantity` : "No open inventory"}</small></div>
+    </section>
 
     {embedded && <StrategyLiveCalculations signal={signal} paper={paper} levels={levels} parameters={data?.strategyParameters ?? []} />}
 
@@ -50,6 +60,6 @@ export default function StrategyObservability({ embedded = false, signal = null,
       </details>)}
     </section>
 
-    <p className="availability-note strategy-footnote">Entry warm-up: {paper.opening_no_entry_minutes ?? "—"} minutes after 09:15 IST · Latest dynamic exit: {paper.last_exit_reason ?? "none"} · Execution remains paper-only.</p>
+    <p className="availability-note strategy-footnote">Entry warm-up: {paper.opening_no_entry_minutes ?? "—"} minutes after 09:15 IST · Latest dynamic exit: {paper.last_exit_reason ?? "none"} · Execution: {executionLabel}.</p>
   </section>;
 }

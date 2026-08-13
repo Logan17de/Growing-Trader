@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attributePaperTrades, calculatePerformance, filterTradesByTimeframe } from "./terminalAnalytics.ts";
+import { attributePaperTrades, calculatePerformance, filterTradesByMode, filterTradesByTimeframe } from "./terminalAnalytics.ts";
 import type { PaperOrder, PaperTrade } from "./terminalTypes.ts";
 
-function trade(id: string, orderId: string, pnl: number | null, executedAt: string): PaperTrade {
-  return { id, order_id: orderId, trading_symbol: "NIFTY", quantity: 1, fill_price: 100, pnl, executed_at: executedAt, entry_price: 90, exit_policy: "test" };
+function trade(id: string, orderId: string, pnl: number | null, executedAt: string, mode?: "paper" | "live"): PaperTrade {
+  return { id, order_id: orderId, trading_symbol: "NIFTY", quantity: 1, fill_price: 100, pnl, executed_at: executedAt, entry_price: 90, exit_policy: "test", mode };
 }
 
 test("filters realized trades by selected timeframe", () => {
@@ -28,6 +28,18 @@ test("performance calculations remain empty instead of fabricating zeros", () =>
   assert.equal(metrics.netPnl, null);
   assert.equal(metrics.winRate, null);
   assert.equal(metrics.completedTrades, 0);
+});
+
+test("keeps PAPER simulations and LIVE broker fills in separate datasets", () => {
+  const mixed = [
+    trade("paper", "a", 125, "2026-08-13T10:00:00+05:30", "paper"),
+    trade("legacy-paper", "b", -25, "2026-08-13T10:30:00+05:30"),
+    trade("live", "c", 410, "2026-08-13T11:00:00+05:30", "live"),
+  ];
+  assert.deepEqual(filterTradesByMode(mixed, "paper").map((row) => row.id), ["paper", "legacy-paper"]);
+  assert.deepEqual(filterTradesByMode(mixed, "live").map((row) => row.id), ["live"]);
+  assert.equal(calculatePerformance(filterTradesByMode(mixed, "paper")).netPnl, 100);
+  assert.equal(calculatePerformance(filterTradesByMode(mixed, "live")).netPnl, 410);
 });
 
 test("calculates expectancy, reward risk, and drawdown", () => {

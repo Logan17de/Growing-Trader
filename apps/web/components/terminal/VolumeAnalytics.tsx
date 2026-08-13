@@ -1,4 +1,3 @@
-import { BackendUnavailable } from "@/components/terminal/EmptyState";
 import { formatIndianVolume, summarizeVolumeSession } from "@/lib/marketCalculations";
 import type { NiftyVolumePoint } from "@/lib/researchTypes";
 import type { ControlStatus } from "@/lib/terminalTypes";
@@ -23,8 +22,6 @@ export function VolumeAnalytics({ status, points }: { status: ControlStatus; poi
       <div><span>Cash pressure</span><strong className={(latest?.cash_pressure ?? 0) >= 0 ? "good" : "bad"}>{latest ? `${latest.cash_pressure >= 0 ? "+" : ""}${latest.cash_pressure.toFixed(2)}` : "—"}</strong><small>directional proxy</small></div>
       <div><span>Heavyweight score</span><strong className={(status.paperEngine.heavyweight_score ?? 0) >= 0 ? "good" : "bad"}>{typeof status.paperEngine.heavyweight_score === "number" ? `${status.paperEngine.heavyweight_score >= 0 ? "+" : ""}${status.paperEngine.heavyweight_score.toFixed(2)}` : "—"}</strong><small>index-driving cohort</small></div>
     </div>
-    <div className="volume-data-boundary">
-      <BackendUnavailable title="Per-constituent RVOL rankings are not exposed" description="Top RVOL names, volume contributors, heavyweight share, and negative-pressure contributors require per-symbol snapshots from Oracle. The UI keeps this boundary explicit instead of deriving names from aggregate data." />
-    </div>
+    <p className="availability-note volume-data-boundary">Use the authenticated constituent drill-down below for per-symbol RVOL, volume spikes, sector breadth, heavyweight contribution, and directional pressure proxies.</p>
   </section>;
 }

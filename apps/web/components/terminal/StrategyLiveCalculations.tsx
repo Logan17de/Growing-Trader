@@ -35,6 +35,8 @@ function LiveMetric({ label, value, detail, tone }: { label: string; value: stri
 
 function SetupCard({ setup, signal, paper, levels, parameters }: { setup: Setup; signal: SignalPayload | null; paper: PaperEngineStatus; levels: StrategyLevel[]; parameters: Map<string, StrategyParameter> }) {
   const isBreakout = setup === "breakout";
+  const mode = paper.mode ?? "paper";
+  const activePosition = paper.open_position ?? paper.open_paper_position;
   const status = statusFor(setup, signal, paper.running);
   const decision = decisionFor(setup, signal, paper.running);
   const level = signal?.level.level_name ? levels.find((item) => item.name === signal.level.level_name) : null;
@@ -109,8 +111,9 @@ function SetupCard({ setup, signal, paper, levels, parameters }: { setup: Setup;
           <LiveMetric label="Risk gate" value={signal ? (signal.risk.allowed ? "ALLOW" : "BLOCK") : "—"} tone={signal ? (signal.risk.allowed ? "good" : "bad") : undefined} />
           <LiveMetric label="Quantity" value={formatNumber(signal?.risk.quantity, 0)} />
           <LiveMetric label="Max premium risk" value={formatCurrency(signal?.risk.max_premium_risk)} />
-          <LiveMetric label="Current exposure" value={paper.open_paper_position?.trading_symbol ?? "None"} />
-          <LiveMetric label="Kill switch" value="Not exposed" detail="Control remains in Risk" />
+          <LiveMetric label="Execution" value={mode === "live" ? (paper.live_armed ? "LIVE ARMED" : "LIVE DISARMED") : "PAPER"} tone={mode === "live" ? (paper.live_armed ? "bad" : "warn") : "good"} />
+          <LiveMetric label="Current exposure" value={activePosition?.trading_symbol ?? "None"} detail={activePosition?.quantity ? `${activePosition.quantity} quantity` : undefined} />
+          <LiveMetric label="Kill switch" value={paper.kill_switch ? "ACTIVE" : "CLEAR"} detail={paper.block_new_entries ? "New entries blocked" : "Normal risk policy"} tone={paper.kill_switch ? "bad" : "good"} />
           <LiveMetric label="Reason" value={signal?.risk.reason ?? "—"} />
         </div></section>
       </div>
@@ -120,7 +123,7 @@ function SetupCard({ setup, signal, paper, levels, parameters }: { setup: Setup;
 
     <div className={`strategy-decision-box ${decision.toLowerCase().replace(" ", "-")}`}>
       <span>Decision</span><strong>{decision}</strong>
-      <ul>{signal?.reasons.length ? signal.reasons.slice(0, 6).map((reason) => <li key={reason}>{reason}</li>) : <li>{paper.running ? "Waiting for a persisted signal evaluation." : "Paper strategy engine is paused."}</li>}</ul>
+      <ul>{signal?.reasons.length ? signal.reasons.slice(0, 6).map((reason) => <li key={reason}>{reason}</li>) : <li>{paper.running ? "Waiting for a persisted signal evaluation." : `${mode.toUpperCase()} strategy engine is paused.`}</li>}</ul>
     </div>
   </article>;
 }

@@ -178,11 +178,11 @@ class FakeRuntime:
         return self.status()
 
 
-def test_live_control_start_and_stop_paper_engine_do_not_stop_oracle() -> None:
+def test_live_control_start_and_stop_engine_do_not_stop_oracle() -> None:
     control = FakeControl(
         [
-            {"id": "start", "command": "START_PAPER_ENGINE"},
-            {"id": "stop", "command": "STOP_PAPER_ENGINE"},
+            {"id": "start", "command": "START_ENGINE"},
+            {"id": "stop", "command": "STOP_ENGINE"},
         ]
     )
     agent = LiveOracleControlAgent(control, poll_seconds=0.01)  # type: ignore[arg-type]

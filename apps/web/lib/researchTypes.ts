@@ -1,3 +1,5 @@
+import type { PaperPosition } from "@/lib/terminalTypes";
+
 export type StrategyParameter = {
   key: string;
   category: string;
@@ -26,6 +28,8 @@ export type NiftyVolumePoint = {
 export type ResearchPaperEngineStatus = {
   running?: boolean;
   state?: string;
+  mode?: "paper" | "live";
+  live_armed?: boolean;
   feed_connected?: boolean;
   weighting?: string;
   nifty_ltp?: number | null;
@@ -45,6 +49,10 @@ export type ResearchPaperEngineStatus = {
   opening_no_entry_minutes?: number;
   last_exit_reason?: string | null;
   data_age_seconds?: number;
+  kill_switch?: boolean;
+  block_new_entries?: boolean;
+  open_position?: PaperPosition | null;
+  open_paper_position?: PaperPosition | null;
 };
 
 export type ResearchStatusPayload = {
