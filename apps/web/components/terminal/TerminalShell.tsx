@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { DashboardVolumeCard } from "@/components/terminal/DashboardVolumeCard";
 import { BrandMark, Icon } from "@/components/terminal/Icon";
 import { terminalNavigation } from "@/lib/navigation";
 import type { ControlStatus, TerminalRoute } from "@/lib/terminalTypes";
@@ -61,7 +62,7 @@ export function TerminalShell({ activeRoute, status, onLogout, children }: Props
             <Link className={activeRoute === item.route ? "active" : ""} href={item.href} key={item.route} aria-current={activeRoute === item.route ? "page" : undefined}>{item.shortLabel}</Link>
           ))}
         </nav>
-        <main className="workspace-content" id="main-content">{children}</main>
+        <main className="workspace-content" id="main-content">{children}{activeRoute==="dashboard"&&<DashboardVolumeCard/>}</main>
       </div>
     </div>
   );
