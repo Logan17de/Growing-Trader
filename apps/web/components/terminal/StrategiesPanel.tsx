@@ -58,11 +58,12 @@ export function StrategiesPanel({ status, refresh }: { status: ControlStatus; re
       <p className="availability-note">Activate and Pause use the existing allow-listed paper-engine command pipeline. Other controls remain disabled until a strategy configuration service exists.</p>
     </section>
 
+    <section className="terminal-section research-section"><div className="section-heading compact"><div><p className="eyebrow">Executable setups</p><h2>Live calculations vs thresholds</h2></div><span>DB thresholds · decision-ready inputs</span></div><StrategyObservability embedded signal={signal} paperEngine={paper} levels={status.levels} /></section>
+
     <section className="dashboard-grid terminal-section">
       <article className="card span-7"><div className="section-heading compact"><div><p className="eyebrow">Explainability</p><h2>Latest signal reasoning</h2></div><span>{status.latestSignal ? new Date(status.latestSignal.observed_at).toLocaleString("en-IN") : "No observation"}</span></div><SignalExplanation signal={signal} level={activeLevel} /></article>
       <article className="card span-5"><div className="section-heading compact"><div><p className="eyebrow">Runtime</p><h2>Strategy health</h2></div></div><div className="diagnostic-list"><div><span>Engine state</span><strong>{paper.state ?? "Unavailable"}</strong></div><div><span>Feed</span><strong className={paper.feed_connected ? "good" : "warn"}>{paper.feed_connected ? "Connected" : "Waiting"}</strong></div><div><span>Constituent coverage</span><strong>{paper.constituents_fresh ?? 0} / {paper.constituents_total ?? 50}</strong></div><div><span>Latest risk verdict</span><strong>{signal ? (signal.risk.allowed ? "Allow" : "Block") : "Unavailable"}</strong></div><div><span>Selected premium</span><strong>{signal?.contract.contract ? formatNumber(signal.contract.contract.ltp) : "Unavailable"}</strong></div></div></article>
     </section>
-    <section className="terminal-section research-section"><div className="section-heading compact"><div><p className="eyebrow">Research telemetry</p><h2>Full strategy observability</h2></div><span>DB thresholds · 50-stock volume · dynamic exits</span></div><StrategyObservability embedded /></section>
     <ConfirmDialog open={confirmPause} title="Pause the paper strategy?" description="This queues STOP_PAPER_ENGINE through the existing Oracle control plane. It stops new paper processing, but does not represent a live-market kill switch or manually close an open research position." confirmLabel="Pause paper engine" busy={busy === "STOP_PAPER_ENGINE"} onCancel={() => setConfirmPause(false)} onConfirm={() => void runCommand("STOP_PAPER_ENGINE")} />
   </>;
 }

@@ -2,13 +2,16 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import NiftyVolumeChart from "@/components/NiftyVolumeChart";
 import { ConfirmDialog } from "@/components/terminal/ConfirmDialog";
 import { BackendUnavailable, EmptyState } from "@/components/terminal/EmptyState";
 import { BrandMark, Icon } from "@/components/terminal/Icon";
+import { MarketDecisionCards } from "@/components/terminal/MarketDecisionCards";
 import { MetricCard } from "@/components/terminal/MetricCard";
 import { PerformanceChart } from "@/components/terminal/PerformanceChart";
 import { SignalExplanation } from "@/components/terminal/SignalExplanation";
 import { TerminalShell } from "@/components/terminal/TerminalShell";
+import { useResearchData } from "@/hooks/useResearchData";
 import { jsonRequest } from "@/lib/controlClient";
 import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/format";
 import { calculatePaperAnalytics } from "@/lib/terminalAnalytics";
@@ -41,6 +44,7 @@ export default function SignalDashboard() {
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
+  const { data: researchData } = useResearchData(10_000, auth === "ready");
 
   const loadTradingData = useCallback(async () => {
     try {
@@ -168,21 +172,19 @@ export default function SignalDashboard() {
     {notice && <div className={`notice${noticeIsError ? " error" : ""}`} role={noticeIsError ? "alert" : "status"} aria-live="polite"><Icon name={noticeIsError ? "shield" : "activity"} /><span>{notice}</span></div>}
     {Object.keys(backendErrors).length > 0 && <div className="notice error" role="alert"><Icon name="shield" /><div><strong>Control plane degraded</strong><pre className="error-box">{JSON.stringify(backendErrors, null, 2)}</pre></div></div>}
 
-    <section className="terminal-metric-grid five dashboard-kpis" aria-label="Trading performance metrics">
+    <MarketDecisionCards status={status} points={researchData?.niftyVolumeSeries ?? []} />
+
+    <section className="card terminal-section market-volume-card dashboard-volume-card">
+      <div className="section-heading compact"><div><p className="eyebrow">Intraday participation</p><h2>Volume behind the market move</h2></div><Link className="inline-link" href="/market">Open market workspace <Icon name="arrow-right" /></Link></div>
+      <NiftyVolumeChart points={researchData?.niftyVolumeSeries ?? []} />
+    </section>
+
+    <section className="terminal-metric-grid six dashboard-kpis" aria-label="Account and execution metrics">
       <MetricCard label="Today's P&L" value={formatCurrency(analytics.todayPnl)} detail={`${analytics.tradesToday} paper trades today`} tone={(analytics.todayPnl ?? 0) >= 0 ? "positive" : "negative"} unavailable={analytics.todayPnl === null} />
       <MetricCard label="Capital deployed" value={formatCurrency(currentExposure)} detail="Open position at entry premium" unavailable={currentExposure === null} />
-      <MetricCard label="Current exposure" value={formatCurrency(currentExposure)} detail="Paper premium exposure" icon="shield" unavailable={currentExposure === null} />
       <MetricCard label="Active positions" value={paper.open_paper_position ? "1" : "0"} detail="One-position rule" icon="positions" />
       <MetricCard label="Active strategies" value={paper.running ? "1" : "0"} detail={paper.state ?? "Unknown state"} icon="strategy" />
-      <MetricCard label="Weekly P&L" value={formatCurrency(analytics.weekPnl)} unavailable={analytics.weekPnl === null} />
-      <MetricCard label="Monthly P&L" value={formatCurrency(analytics.monthPnl)} unavailable={analytics.monthPnl === null} />
-      <MetricCard label="Realized P&L" value={formatCurrency(analytics.totalPnl)} unavailable={analytics.totalPnl === null} />
-      <MetricCard label="Unrealized P&L" unavailable detail="Current option LTP is not exposed" />
-      <MetricCard label="Available capital" unavailable detail="Account-equity snapshot is not exposed" />
       <MetricCard label="Win rate" value={formatPercent(analytics.winRate)} unavailable={analytics.winRate === null} />
-      <MetricCard label="Largest winner" value={formatCurrency(analytics.largestWinner)} tone="positive" unavailable={analytics.largestWinner === null} />
-      <MetricCard label="Largest loser" value={formatCurrency(analytics.largestLoser)} tone="negative" unavailable={analytics.largestLoser === null} />
-      <MetricCard label="Market status" value={(paper.state ?? worker.market_data_status ?? "Unavailable").replaceAll("_", " ").toUpperCase()} detail={paper.feed_connected ? "Feed connected" : "Feed disconnected"} icon="wifi" />
       <MetricCard label="Trades today" value={String(analytics.tradesToday)} detail="Persisted paper orders" icon="orders" />
     </section>
 
