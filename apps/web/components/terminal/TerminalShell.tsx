@@ -15,6 +15,10 @@ type Props = {
 export function TerminalShell({ activeRoute, status, onLogout, children }: Props) {
   const groups = ["Operate", "Evaluate", "System"] as const;
   const workerOnline = Boolean(status?.worker.online);
+  const mode = status?.executionControl?.mode ?? status?.paperEngine.mode ?? "paper";
+  const armed = Boolean(status?.executionControl?.live_armed ?? status?.paperEngine.live_armed);
+  const modeText = mode === "live" ? (armed ? "LIVE execution armed" : "LIVE execution disarmed") : "Paper execution";
+  const modeDot = mode === "live" ? (armed ? "bad" : "warn") : "amber";
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">Skip to main content</a>
@@ -36,8 +40,8 @@ export function TerminalShell({ activeRoute, status, onLogout, children }: Props
           ))}
         </nav>
         <div className="sidebar-footer">
-          <span className="sidebar-mode"><span className="status-dot amber" />Paper execution</span>
-          <small>Live order placement is not implemented</small>
+          <span className="sidebar-mode"><span className={`status-dot ${modeDot}`} />{modeText}</span>
+          <small>{mode === "live" ? "Groww orders route only through Oracle" : "No broker orders are sent"}</small>
         </div>
       </aside>
 
@@ -46,8 +50,8 @@ export function TerminalShell({ activeRoute, status, onLogout, children }: Props
           <div className="mobile-brand"><BrandMark /><strong>Growing Trader</strong></div>
           <div className="utility-context"><Icon name="terminal" /><span>Operations terminal</span><kbd>{workerOnline ? "SYNC" : "LOCAL"}</kbd></div>
           <div className="top-actions">
-            <span className="refresh-note"><Icon name="refresh" />Auto-refresh · 3s</span>
-            <span className="pill paper"><span className="status-dot amber" />Paper only</span>
+            <span className="refresh-note"><Icon name="refresh" />Auto-refresh</span>
+            <span className={`pill ${mode === "live" ? "live" : "paper"}`}><span className={`status-dot ${modeDot}`} />{mode === "live" ? (armed ? "LIVE ARMED" : "LIVE DISARMED") : "PAPER"}</span>
             <span className={`connection-chip ${workerOnline ? "connected" : "offline"}`}><span className={`status-dot ${workerOnline ? "good" : "bad"}`} />Oracle {workerOnline ? "online" : "offline"}</span>
             <button type="button" className="ghost icon-button" onClick={() => void onLogout()} aria-label="Sign out"><Icon name="logout" /><span>Sign out</span></button>
           </div>
