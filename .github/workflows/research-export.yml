@@ -1,0 +1,81 @@
+name: Market Research Export
+
+on:
+  schedule:
+    - cron: "25 15 * * 1-5"
+      timezone: "Asia/Kolkata"
+  workflow_dispatch:
+    inputs:
+      session_date:
+        description: "IST session date to export (YYYY-MM-DD); blank uses today"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PGCONNECT_TIMEOUT: "15"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve session date
+        id: session
+        env:
+          REQUESTED_DATE: ${{ inputs.session_date }}
+        run: |
+          set -euo pipefail
+          if [ -n "${REQUESTED_DATE:-}" ]; then
+            date -d "$REQUESTED_DATE" +%F >/dev/null
+            session_date="$REQUESTED_DATE"
+          else
+            session_date="$(TZ=Asia/Kolkata date +%F)"
+          fi
+          echo "date=$session_date" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Postgres client
+        run: |
+          set -euo pipefail
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+          psql --version
+
+      - name: Export machine-readable market log
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SESSION_DATE: ${{ steps.session.outputs.date }}
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_DB_URL"
+          mkdir -p research-export
+
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -At \
+            -c "select row_to_json(row_data)::text from (select * from public.market_watch_labeled where session_date = '$SESSION_DATE'::date order by observed_at) row_data;" \
+            > "research-export/market-watch-$SESSION_DATE.jsonl"
+
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -At \
+            -c "select row_to_json(row_data)::text from (select * from public.market_watch_big_moves where session_date = '$SESSION_DATE'::date order by observed_at) row_data;" \
+            > "research-export/big-moves-$SESSION_DATE.jsonl"
+
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -At \
+            -c "select json_build_object('session_date','$SESSION_DATE','observations',count(*),'labeled_1m',count(nifty_move_1m_bps),'labeled_5m',count(nifty_move_5m_bps),'labeled_15m',count(nifty_move_15m_bps),'big_move_rows',count(*) filter (where big_move_1m or big_move_5m or big_move_15m),'max_abs_1m_bps',max(abs(nifty_move_1m_bps)),'max_abs_5m_bps',max(abs(nifty_move_5m_bps)),'max_abs_15m_bps',max(abs(nifty_move_15m_bps)))::text from public.market_watch_labeled where session_date = '$SESSION_DATE'::date;" \
+            > "research-export/summary-$SESSION_DATE.json"
+
+          echo "### Market research export" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Session: $SESSION_DATE" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Full log rows: $(wc -l < "research-export/market-watch-$SESSION_DATE.jsonl")" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Big-move rows: $(wc -l < "research-export/big-moves-$SESSION_DATE.jsonl")" >> "$GITHUB_STEP_SUMMARY"
+          echo "- The JSONL is observational research data, not an execution signal." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload research artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-research-${{ steps.session.outputs.date }}
+          path: research-export/
+          retention-days: 90
+          if-no-files-found: error
