@@ -1,3 +1,4 @@
+import { marketDateKey, marketHour } from "@/lib/format";
 import type { PaperOrder, PaperTrade } from "@/lib/terminalTypes";
 
 export type PaperAnalytics = {
@@ -25,10 +26,27 @@ export type PaperAnalytics = {
   losingStreak: number;
 };
 
-function startOfLocalDay(date = new Date()): Date { return new Date(date.getFullYear(), date.getMonth(), date.getDate()); }
-function startOfLocalWeek(date = new Date()): Date { const start = startOfLocalDay(date); const day = start.getDay() || 7; start.setDate(start.getDate() - day + 1); return start; }
-function startOfLocalMonth(date = new Date()): Date { return new Date(date.getFullYear(), date.getMonth(), 1); }
-function pnlSince(trades: PaperTrade[], start: Date): number | null { const values = trades.filter((trade) => new Date(trade.executed_at) >= start && trade.pnl !== null).map((trade) => trade.pnl as number); return values.length ? values.reduce((sum, value) => sum + value, 0) : null; }
+function dateKeyOffset(key: string, days: number): string {
+  const [year, month, day] = key.split("-").map(Number);
+  const value = new Date(Date.UTC(year, month - 1, day + days));
+  return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, "0")}-${String(value.getUTCDate()).padStart(2, "0")}`;
+}
+
+function marketWeekStartKey(now = new Date()): string {
+  const today = marketDateKey(now);
+  const [year, month, day] = today.split("-").map(Number);
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay() || 7;
+  return dateKeyOffset(today, -(weekday - 1));
+}
+
+function marketMonthStartKey(now = new Date()): string {
+  return `${marketDateKey(now).slice(0, 7)}-01`;
+}
+
+function pnlSinceKey(trades: PaperTrade[], startKey: string): number | null {
+  const values = trades.filter((trade) => marketDateKey(trade.executed_at) >= startKey && trade.pnl !== null).map((trade) => trade.pnl as number);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
 
 function drawdown(values: number[]) {
   let equity = 0; let peak = 0; let maximum = 0;
@@ -62,14 +80,14 @@ export function calculatePaperAnalytics(trades: PaperTrade[], orders: PaperOrder
 
   let winningStreak = 0; let losingStreak = 0;
   for (const value of pnl) { if (value > 0 && losingStreak === 0) winningStreak += 1; else if (value < 0 && winningStreak === 0) losingStreak += 1; else break; }
-  const today = startOfLocalDay();
+  const todayKey = marketDateKey(new Date());
   const winRate = pnl.length ? winners.length / pnl.length : null;
   const averageWinner = winners.length ? (grossProfit as number) / winners.length : null;
   const averageLoser = losers.length ? (grossLoss as number) / losers.length : null;
   return {
-    todayPnl: pnlSince(completed, today),
-    weekPnl: pnlSince(completed, startOfLocalWeek()),
-    monthPnl: pnlSince(completed, startOfLocalMonth()),
+    todayPnl: pnlSinceKey(completed, todayKey),
+    weekPnl: pnlSinceKey(completed, marketWeekStartKey()),
+    monthPnl: pnlSinceKey(completed, marketMonthStartKey()),
     totalPnl: pnl.length ? pnl.reduce((sum, value) => sum + value, 0) : null,
     grossProfit,
     grossLoss,
@@ -85,7 +103,7 @@ export function calculatePaperAnalytics(trades: PaperTrade[], orders: PaperOrder
     maxDrawdown: completed.length ? drawdown(chronologicalPnl) : null,
     largestWinner: winners.length ? Math.max(...winners) : null,
     largestLoser: losers.length ? Math.min(...losers) : null,
-    tradesToday: orders.filter((order) => new Date(order.created_at) >= today).length,
+    tradesToday: orders.filter((order) => marketDateKey(order.created_at) === todayKey).length,
     completedTrades: completed.length,
     winningStreak,
     losingStreak,
@@ -117,7 +135,8 @@ export function groupPnlByHour(trades: PaperTrade[]) {
   const grouped = new Map<number, { trades: number; pnl: number; wins: number }>();
   for (const trade of trades) {
     if (trade.pnl === null) continue;
-    const hour = new Date(trade.executed_at).getHours();
+    const hour = marketHour(trade.executed_at);
+    if (hour === null) continue;
     const current = grouped.get(hour) ?? { trades: 0, pnl: 0, wins: 0 };
     current.trades += 1; current.pnl += trade.pnl; current.wins += trade.pnl > 0 ? 1 : 0; grouped.set(hour, current);
   }
