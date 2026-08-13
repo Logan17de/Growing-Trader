@@ -12,12 +12,15 @@ if ! command -v psql >/dev/null 2>&1; then
 fi
 
 psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 <<'SQL'
-create table if not exists public.growing_trader_migrations (
+create schema if not exists private;
+revoke all on schema private from public;
+create table if not exists private.growing_trader_migrations (
   version text primary key,
   filename text not null,
   checksum text not null,
   applied_at timestamptz not null default now()
 );
+revoke all on table private.growing_trader_migrations from public, anon, authenticated;
 SQL
 
 mapfile -t migration_files < <(find "$MIGRATION_DIR" -maxdepth 1 -type f -name '*.sql' | sort)
@@ -28,7 +31,7 @@ for file in "${migration_files[@]}"; do
   checksum="$(sha256sum "$file" | awk '{print $1}')"
 
   existing="$(psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -Atc \
-    "select checksum from public.growing_trader_migrations where version = '${version}'")"
+    "select checksum from private.growing_trader_migrations where version = '${version}'")"
 
   if [[ -n "$existing" ]]; then
     if [[ "$existing" != "$checksum" ]]; then
@@ -42,7 +45,7 @@ for file in "${migration_files[@]}"; do
   echo "apply ${filename}"
   psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f "$file"
   psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c \
-    "insert into public.growing_trader_migrations(version, filename, checksum) values ('${version}', '${filename}', '${checksum}')"
+    "insert into private.growing_trader_migrations(version, filename, checksum) values ('${version}', '${filename}', '${checksum}')"
 done
 
 psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c "NOTIFY pgrst, 'reload schema';"
