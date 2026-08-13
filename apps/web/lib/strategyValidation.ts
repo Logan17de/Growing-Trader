@@ -22,7 +22,7 @@ const UNIT_INTERVAL = new Set([
   "target_abs_delta", "min_abs_delta", "max_abs_delta", "max_spread_pct",
   "exit_profit_target_pct", "exit_stop_loss_pct", "exit_trailing_activation_pct",
   "exit_trailing_drawdown_pct", "exit_signal_flip_threshold", "risk_per_trade_pct",
-  "daily_loss_limit_pct", "daily_profit_lock_pct", "min_signal_confidence",
+  "daily_loss_limit_pct", "daily_profit_lock_pct", "min_signal_confidence", "entry_cutoff_enabled",
 ]);
 
 const NON_NEGATIVE = new Set([
@@ -43,6 +43,7 @@ export function validateStrategyValues(values: Record<string, number>) {
   for (const [key, value] of Object.entries(values)) {
     if (!Number.isFinite(value)) throw new Error(`${key} must be finite`);
     if (UNIT_INTERVAL.has(key) && (value < 0 || value > 1)) throw new Error(`${key} must be between 0 and 1`);
+    if (key === "entry_cutoff_enabled" && value !== 0 && value !== 1) throw new Error("entry_cutoff_enabled must be 0 or 1");
     if (NON_NEGATIVE.has(key) && value < 0) throw new Error(`${key} cannot be negative`);
     if (POSITIVE.has(key) && value <= 0) throw new Error(`${key} must be positive`);
     if (key.endsWith("_weight") && value < 0) throw new Error(`${key} cannot be negative`);
