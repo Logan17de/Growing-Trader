@@ -66,6 +66,7 @@ class StrategyParams:
     max_spread_pct: float = 0.02
 
     opening_no_entry_minutes: int = 10
+    entry_cutoff_enabled: bool = False
     entry_cutoff_minutes_before_close: int = 15
 
     exit_min_hold_seconds: int = 60
@@ -186,7 +187,7 @@ class StrategyParams:
                 continue
             default = getattr(defaults, key)
             if isinstance(default, bool):
-                converted[key] = bool(raw)
+                converted[key] = bool(float(raw)) if not isinstance(raw, bool) else raw
             elif isinstance(default, int):
                 converted[key] = int(float(raw))
             else:
