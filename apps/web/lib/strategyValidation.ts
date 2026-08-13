@@ -22,11 +22,12 @@ const UNIT_INTERVAL = new Set([
   "target_abs_delta", "min_abs_delta", "max_abs_delta", "max_spread_pct",
   "exit_profit_target_pct", "exit_stop_loss_pct", "exit_trailing_activation_pct",
   "exit_trailing_drawdown_pct", "exit_signal_flip_threshold", "risk_per_trade_pct",
-  "daily_loss_limit_pct", "min_signal_confidence",
+  "daily_loss_limit_pct", "daily_profit_lock_pct", "min_signal_confidence",
 ]);
 
 const NON_NEGATIVE = new Set([
-  "opening_no_entry_minutes", "exit_min_hold_seconds", "cooldown_seconds", "max_data_age_seconds",
+  "opening_no_entry_minutes", "entry_cutoff_minutes_before_close", "exit_min_hold_seconds",
+  "cooldown_seconds", "max_data_age_seconds", "max_quantity", "max_premium_per_trade",
 ]);
 
 const POSITIVE = new Set([
@@ -47,6 +48,7 @@ export function validateStrategyValues(values: Record<string, number>) {
     if (key.endsWith("_weight") && value < 0) throw new Error(`${key} cannot be negative`);
   }
   if ((values.rvol_cap ?? 2) <= 1) throw new Error("rvol_cap must be greater than 1");
+  if ((values.entry_cutoff_minutes_before_close ?? 0) >= 375) throw new Error("entry cutoff must leave some market session time available");
   if ((values.min_abs_delta ?? 0) > (values.target_abs_delta ?? 0)) throw new Error("target delta must be above minimum delta");
   if ((values.target_abs_delta ?? 0) > (values.max_abs_delta ?? 1)) throw new Error("target delta must be below maximum delta");
   if ((values.exit_min_hold_seconds ?? 0) >= (values.exit_max_hold_seconds ?? Number.MAX_SAFE_INTEGER)) throw new Error("minimum hold must be below maximum hold");
