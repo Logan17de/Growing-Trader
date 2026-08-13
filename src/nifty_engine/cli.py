@@ -59,14 +59,33 @@ def control_agent() -> None:
     LiveOracleControlAgent(SupabaseControlPlane.from_env()).run_forever()
 
 
+def scheduled_start_command() -> None:
+    from .ops_automation import scheduled_start
+
+    print(dumps(scheduled_start()))
+
+
+def scheduled_shutdown_command() -> None:
+    from .ops_automation import scheduled_shutdown
+
+    print(dumps(scheduled_shutdown()))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="NIFTY market event engine")
-    parser.add_argument("command", choices=["paper-demo", "control-agent"])
+    parser.add_argument(
+        "command",
+        choices=["paper-demo", "control-agent", "scheduled-start", "scheduled-shutdown"],
+    )
     args = parser.parse_args()
     if args.command == "paper-demo":
         paper_demo()
     elif args.command == "control-agent":
         control_agent()
+    elif args.command == "scheduled-start":
+        scheduled_start_command()
+    elif args.command == "scheduled-shutdown":
+        scheduled_shutdown_command()
 
 
 if __name__ == "__main__":
