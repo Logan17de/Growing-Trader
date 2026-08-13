@@ -27,8 +27,8 @@ export function PositionsPanel({ status, refresh }: { status: ControlStatus; ref
   async function command(commandName: ControlCommand, payload: Record<string, unknown> = {}) {
     setBusy(commandName); setNotice("");
     try {
-      await jsonRequest("/api/control/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command: commandName, payload }) });
-      setNotice(`${commandName.replaceAll("_", " ")} queued.`); await refresh?.();
+      const response=await jsonRequest<{duplicate?:boolean}>("/api/control/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command: commandName, payload }) });
+      setNotice(response.duplicate?`${commandName.replaceAll("_", " ")} is already queued/running.`:`${commandName.replaceAll("_", " ")} queued for Oracle.`); await refresh?.();
     } catch (reason) { setNotice(reason instanceof Error ? reason.message : "Position command failed"); }
     finally { setBusy(""); }
   }
@@ -39,15 +39,17 @@ export function PositionsPanel({ status, refresh }: { status: ControlStatus; ref
 
   const deployed = position?.entry_price && position.quantity ? position.entry_price * position.quantity : null;
   const live = mode === "live";
+  const auditResult=status.latestCommand?.command==="CHECK_LIVE_POSITIONS"&&status.latestCommand.status==="completed"?status.latestCommand.result:null;
   return <>
     {notice && <div className="notice" role="status">{notice}</div>}
     {live && armed && <div className="notice error" role="status"><strong>LIVE position controls</strong><span> Exit and partial-exit actions send actual Groww SELL orders when a live position exists.</span></div>}
     <section className="terminal-metric-grid four">
-      <MetricCard label="Open positions" value={position ? "1" : "0"} detail="One-position rule enforced by Python risk engine" icon="positions" />
+      <MetricCard label="Open positions" value={position ? "1" : "0"} detail="One managed position rule" icon="positions" />
       <MetricCard label="Premium deployed" value={formatCurrency(deployed)} detail="Entry premium × current quantity" unavailable={deployed === null} />
       <MetricCard label="Unrealized P&L" value={formatCurrency(position?.unrealized_pnl)} unavailable={position?.unrealized_pnl == null} tone={(position?.unrealized_pnl ?? 0) >= 0 ? "positive" : "negative"} />
       <MetricCard label="Execution mode" value={live ? (armed ? "LIVE ARMED" : "LIVE") : "PAPER"} detail={live ? "Groww broker execution" : "Simulated fills"} tone={live ? "negative" : "warning"} icon="shield" />
     </section>
+    {live&&<section className="terminal-section card"><div className="section-heading compact"><div><p className="eyebrow">Broker reconciliation</p><h2>Groww vs database</h2></div><button className="secondary" disabled={!status.worker.online||Boolean(busy)} onClick={()=>void command("CHECK_LIVE_POSITIONS")}>{busy==="CHECK_LIVE_POSITIONS"?"Checking…":"Verify Groww positions"}</button></div><div className="diagnostic-list"><div><span>Managed DB position</span><strong>{position?`${position.trading_symbol} · ${position.quantity}`:"Flat"}</strong></div><div><span>Last broker audit</span><strong>{auditResult?String(auditResult.flat?"FLAT / MATCHED":"POSITION MATCHED"):"Run audit"}</strong></div></div><p className="availability-note">Oracle queries Groww&apos;s full F&amp;O position book, filters non-zero NIFTY positions, and compares it with the managed Supabase position. Any orphan or quantity mismatch activates fail-closed behavior; automation will not power off Oracle.</p></section>}
     <section className="terminal-section card">
       <div className="section-heading compact"><div><p className="eyebrow">Open inventory</p><h2>Positions</h2></div><span>Current option mark from Oracle</span></div>
       {!position ? <EmptyState icon="positions" title={`No open ${live ? "LIVE" : "paper"} position`} description={live ? "A live position appears after an armed strategy signal is filled at Groww." : "A position appears when a persisted signal passes risk checks and the paper runner opens it."} /> : <div className="table-scroll"><table className="data-table"><thead><tr><th>Instrument</th><th>Qty</th><th>Entry</th><th>LTP</th><th>Unrealized P&amp;L</th><th>Opened</th><th>Holding</th><th>Mode</th></tr></thead><tbody><tr><td><strong>{position.trading_symbol ?? "Unavailable"}</strong></td><td className="numeric">{formatNumber(position.quantity, 0)}</td><td className="numeric">{formatNumber(position.entry_price)}</td><td className="numeric">{formatNumber(position.current_price)}</td><td className={`numeric ${(position.unrealized_pnl ?? 0) >= 0 ? "good" : "bad"}`}>{formatCurrency(position.unrealized_pnl)}</td><td>{formatDateTime(position.opened_at)}</td><td>{formatDuration(position.opened_at)}</td><td><span className={`status-badge ${live ? "bad" : "warn"}`}><span className={`status-dot ${live ? "bad" : "amber"}`} />{live ? "LIVE" : "Paper"}</span></td></tr></tbody></table></div>}
