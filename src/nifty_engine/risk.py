@@ -35,10 +35,11 @@ class RiskEngine:
             return RiskDecision(False, 0, 0.0, "account equity must be positive")
         if state.external_block_reason:
             return RiskDecision(False, 0, state.account_equity * self.params.risk_per_trade_pct, state.external_block_reason)
-        local = now.astimezone(IST)
-        close = datetime.combine(local.date(), clock_time(15, 30), tzinfo=IST)
-        if local >= close - timedelta(minutes=self.params.entry_cutoff_minutes_before_close):
-            return RiskDecision(False, 0, 0.0, "new-entry cutoff before market close")
+        if self.params.entry_cutoff_enabled:
+            local = now.astimezone(IST)
+            close = datetime.combine(local.date(), clock_time(15, 30), tzinfo=IST)
+            if local >= close - timedelta(minutes=self.params.entry_cutoff_minutes_before_close):
+                return RiskDecision(False, 0, 0.0, "new-entry cutoff before market close")
         if confidence < self.params.min_signal_confidence:
             return RiskDecision(False, 0, 0.0, "signal confidence below minimum")
         if constituent_count is not None and constituent_count < self.params.min_constituents:
