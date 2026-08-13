@@ -14,7 +14,7 @@ export async function GET() {
 
   try {
     const supabase = serverSupabase();
-    const [workerResult, commandResult, credentialResult, signalResult, levelsResult, paperResult] = await Promise.all([
+    const [workerResult, commandResult, credentialResult, signalResult, levelsResult, paperResult, executionResult] = await Promise.all([
       supabase.from("engine_status").select("*").eq("worker_id", "oracle-primary").maybeSingle(),
       supabase.from("engine_commands")
         .select("id,command,status,result,error,created_at,claimed_at,completed_at")
@@ -27,6 +27,8 @@ export async function GET() {
         .order("price", { ascending: true }),
       supabase.from("paper_engine_status")
         .select("payload,updated_at").eq("worker_id", "oracle-primary").maybeSingle(),
+      supabase.from("execution_control_state")
+        .select("mode,live_armed,max_order_premium,product,order_type,armed_at,updated_at").eq("id", true).maybeSingle(),
     ]);
 
     const backendErrors: Record<string, string> = {};
@@ -36,6 +38,7 @@ export async function GET() {
     collectError(backendErrors, "signals", signalResult);
     collectError(backendErrors, "levels", levelsResult);
     collectError(backendErrors, "paperEngine", paperResult);
+    collectError(backendErrors, "execution", executionResult);
 
     const worker = workerResult.error ? null : workerResult.data;
     const heartbeat = worker?.last_heartbeat ? Date.parse(worker.last_heartbeat) : 0;
@@ -60,6 +63,7 @@ export async function GET() {
         ...(paperResult.data?.payload ?? { running: false, state: "stopped" }),
         statusUpdatedAt: paperResult.data?.updated_at ?? null,
       },
+      executionControl: executionResult.error ? null : executionResult.data ?? null,
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return Response.json(
