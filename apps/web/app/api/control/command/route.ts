@@ -3,10 +3,10 @@ import { serverSupabase } from "@/lib/serverSupabase";
 
 const ALLOWED = new Set([
   "TEST_AUTH", "TEST_MARKET_DATA", "START_PAPER_ENGINE", "STOP_PAPER_ENGINE", "START_ENGINE", "STOP_ENGINE", "STOP",
-  "EXIT_PAPER_POSITION", "UPDATE_PAPER_POSITION", "KILL_SWITCH", "RESET_KILL_SWITCH", "RUN_REPLAY",
+  "EXIT_PAPER_POSITION", "UPDATE_PAPER_POSITION", "KILL_SWITCH", "RESET_KILL_SWITCH", "CHECK_LIVE_POSITIONS", "RUN_REPLAY",
 ]);
 
-const NEEDS_CREDENTIALS = new Set(["TEST_AUTH", "TEST_MARKET_DATA", "START_PAPER_ENGINE", "START_ENGINE"]);
+const NEEDS_CREDENTIALS = new Set(["TEST_AUTH", "TEST_MARKET_DATA", "START_PAPER_ENGINE", "START_ENGINE", "CHECK_LIVE_POSITIONS"]);
 
 function workerIsOnline(worker: { last_heartbeat?: string; state?: string } | null): boolean {
   if (!worker?.last_heartbeat || worker.state === "stopped") return false;

@@ -46,6 +46,14 @@ class FakeGroww:
     def get_position_for_trading_symbol(self, *, trading_symbol: str, segment: str) -> dict[str, Any]:
         return {"trading_symbol": trading_symbol, "quantity": 65}
 
+    def get_positions_for_user(self, *, segment: str) -> dict[str, Any]:
+        assert segment == "FNO"
+        return {"positions": [
+            {"trading_symbol": "NIFTY26AUG24300CE", "segment": "FNO", "quantity": 65, "product": "MIS", "net_price": 101.25, "realised_pnl": 0},
+            {"trading_symbol": "BANKNIFTY26AUG55000CE", "segment": "FNO", "quantity": 30, "product": "MIS", "net_price": 80.0, "realised_pnl": 0},
+            {"trading_symbol": "NIFTY26AUG24400PE", "segment": "FNO", "quantity": 0, "product": "MIS", "net_price": 0, "realised_pnl": 0},
+        ]}
+
 
 def test_order_reference_is_stable_and_groww_compatible() -> None:
     first = make_order_reference("GT", "123e4567-e89b-12d3-a456-426614174000")
@@ -93,3 +101,16 @@ def test_option_buy_margin_uses_fno_balance() -> None:
 def test_broker_position_quantity_is_read_back() -> None:
     executor = GrowwOrderExecutor(FakeGroww())
     assert executor.broker_position_quantity("NIFTY-DEMO-CE") == 65
+
+
+def test_broker_nifty_positions_reads_full_fno_book_and_filters_zero_and_other_indices() -> None:
+    executor = GrowwOrderExecutor(FakeGroww())
+    rows = executor.broker_nifty_positions()
+    assert rows == [{
+        "trading_symbol": "NIFTY26AUG24300CE",
+        "quantity": 65,
+        "segment": "FNO",
+        "product": "MIS",
+        "net_price": 101.25,
+        "realised_pnl": 0.0,
+    }]

@@ -106,6 +106,15 @@ def _wait_flat(control: SupabaseControlPlane, mode: str, timeout_seconds: float 
     raise TimeoutError("position did not become flat before the shutdown deadline")
 
 
+def _broker_audit(control: SupabaseControlPlane, timeout_seconds: float = 90.0) -> dict[str, Any]:
+    command_id = _queue_command(control, "CHECK_LIVE_POSITIONS")
+    row = _wait_command(control, command_id, timeout_seconds)
+    result = row.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("broker position audit returned no structured result")
+    return dict(result)
+
+
 def scheduled_start() -> dict[str, Any]:
     control = SupabaseControlPlane.from_env()
     _wait_worker(control)
@@ -133,6 +142,10 @@ def scheduled_start() -> dict[str, Any]:
             "started": False,
             "reason": "LIVE mode is disarmed; Oracle control agent is online and waiting for dashboard arm/start",
         }
+    if mode == "live":
+        audit = _broker_audit(control)
+        if not bool(audit.get("flat")):
+            raise RuntimeError(f"refusing LIVE startup because broker is not flat: {audit}")
 
     command_id = _queue_command(control, "START_ENGINE")
     result = _wait_command(control, command_id, 90.0)
@@ -147,6 +160,10 @@ def scheduled_shutdown() -> dict[str, Any]:
     online = _worker_online(control)
 
     if not online:
+        if mode == "live":
+            raise RuntimeError(
+                "Oracle control agent is offline in LIVE mode; broker-flat state cannot be verified, refusing VM shutdown"
+            )
         if live_orders_before:
             raise RuntimeError(
                 "Oracle control agent is offline while a LIVE order is unresolved; refusing VM shutdown"
@@ -164,6 +181,12 @@ def scheduled_shutdown() -> dict[str, Any]:
     })
     _wait_command(control, kill_id, 60.0)
     _wait_flat(control, mode, 150.0)
+
+    broker_audit: dict[str, Any] | None = None
+    if mode == "live":
+        broker_audit = _broker_audit(control)
+        if not bool(broker_audit.get("flat")):
+            raise RuntimeError(f"Groww still has a NIFTY F&O position after flatten: {broker_audit}")
 
     stop_id = _queue_command(control, "STOP_ENGINE")
     _wait_command(control, stop_id, 60.0)
@@ -184,4 +207,11 @@ def scheduled_shutdown() -> dict[str, Any]:
     if live_orders_after:
         raise RuntimeError(f"LIVE orders remain after safe shutdown: {live_orders_after}")
 
-    return {"ok": True, "mode": mode, "worker_online": True, "flat": True, "live_armed": False}
+    return {
+        "ok": True,
+        "mode": mode,
+        "worker_online": True,
+        "flat": True,
+        "live_armed": False,
+        "broker_audit": broker_audit,
+    }

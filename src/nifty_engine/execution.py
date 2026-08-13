@@ -183,6 +183,38 @@ class GrowwOrderExecutor:
             return self._recover_after_uncertain_submit(order_reference_id, quantity)
         return self._resolve_fill(groww_order_id, order_reference_id, quantity)
 
+    def broker_positions(self) -> list[dict[str, Any]]:
+        """Return current non-zero F&O positions directly from Groww.
+
+        This is intentionally independent of Supabase so shutdown/startup audits can
+        detect a broker position that is missing from the local order ledger.
+        """
+        response = dict(self.groww.get_positions_for_user(
+            segment=getattr(self.groww, "SEGMENT_FNO", "FNO"),
+        ) or {})
+        rows = response.get("positions")
+        if not isinstance(rows, list):
+            return []
+        output: list[dict[str, Any]] = []
+        for value in rows:
+            if not isinstance(value, dict):
+                continue
+            quantity = int(value.get("quantity") or 0)
+            if quantity == 0:
+                continue
+            output.append({
+                "trading_symbol": str(value.get("trading_symbol") or ""),
+                "quantity": quantity,
+                "segment": str(value.get("segment") or "FNO"),
+                "product": str(value.get("product") or ""),
+                "net_price": float(value.get("net_price") or 0.0),
+                "realised_pnl": float(value.get("realised_pnl") or 0.0),
+            })
+        return output
+
+    def broker_nifty_positions(self) -> list[dict[str, Any]]:
+        return [row for row in self.broker_positions() if str(row.get("trading_symbol") or "").upper().startswith("NIFTY")]
+
     def broker_position_quantity(self, trading_symbol: str) -> int | None:
         try:
             response = dict(self.groww.get_position_for_trading_symbol(

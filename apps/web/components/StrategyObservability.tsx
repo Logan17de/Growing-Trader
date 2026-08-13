@@ -15,6 +15,8 @@ type StrategyParameter = {
 type PaperEngineStatus = {
   running?: boolean;
   state?: string;
+  mode?: "paper" | "live";
+  live_armed?: boolean;
   feed_connected?: boolean;
   weighting?: string;
   nifty_ltp?: number | null;
@@ -90,6 +92,7 @@ export default function StrategyObservability({ embedded = false }: { embedded?:
   }, [data?.strategyParameters]);
 
   const paper = data?.paperEngine ?? {};
+  const execution = paper.mode === "live" ? (paper.live_armed ? "LIVE · ARMED" : "LIVE · DISARMED") : "PAPER";
 
   return (
     <section className={embedded ? "strategy-research-embed" : "strategy-research-standalone"} style={embedded ? undefined : { width: "min(1500px, 95vw)", margin: "0 auto", padding: "28px 0 72px" }}>
@@ -170,7 +173,7 @@ export default function StrategyObservability({ embedded = false }: { embedded?:
       </section>
 
       <p className="muted" style={{ marginTop: 16, fontSize: ".78rem" }}>
-        Entry warm-up: {paper.opening_no_entry_minutes ?? "—"} minutes after 09:15 IST · Latest dynamic exit: {paper.last_exit_reason ?? "none"} · Execution remains paper-only.
+        Entry warm-up: {paper.opening_no_entry_minutes ?? "—"} minutes after 09:15 IST · Latest dynamic exit: {paper.last_exit_reason ?? "none"} · Execution: {execution}.
       </p>
     </section>
   );
