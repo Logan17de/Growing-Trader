@@ -57,6 +57,69 @@ class LiveOracleControlAgent(OracleControlAgent):
         response = self.control.client.table("execution_control_state").select("mode,product").eq("id", True).maybe_single().execute()
         return str((response.data or {}).get("mode") or "paper")
 
+    def _audit_live_positions(self) -> dict[str, Any]:
+        """Reconcile Supabase's managed position with Groww's actual NIFTY F&O book.
+
+        Unknown/orphan broker positions are never silently flattened. They activate
+        the kill switch and make lifecycle automation fail closed so the VM stays up.
+        """
+        groww, _profile = self._groww_client()
+        persistence = TradingPersistence(self.control.client, 1.0)
+        execution = persistence.load_execution_control()
+        executor = GrowwOrderExecutor(groww, product=str(execution.get("product") or "MIS"))
+        persistence.recover_submitting_entries(executor)
+        persistence.recover_pending_exits(executor)
+        _risk, managed = persistence.restore_risk_state_for_mode("live")
+        broker_positions = executor.broker_nifty_positions()
+
+        mismatches: list[str] = []
+        managed_symbol = managed.trading_symbol if managed else None
+        managed_quantity = managed.quantity if managed else 0
+        broker_by_symbol = {str(row.get("trading_symbol") or ""): int(row.get("quantity") or 0) for row in broker_positions}
+
+        if managed is not None:
+            broker_quantity = broker_by_symbol.get(managed.trading_symbol, 0)
+            if broker_quantity != managed.quantity:
+                mismatches.append(
+                    f"managed {managed.trading_symbol}: DB={managed.quantity}, broker={broker_quantity}"
+                )
+
+        for row in broker_positions:
+            symbol = str(row.get("trading_symbol") or "")
+            quantity = int(row.get("quantity") or 0)
+            if symbol != managed_symbol and quantity != 0:
+                mismatches.append(f"unexpected broker position {symbol}: broker={quantity}, DB=0")
+
+        if managed is None and broker_positions:
+            # The loop above already records each orphan; this keeps the reason explicit.
+            managed_quantity = 0
+
+        if mismatches:
+            reason = "LIVE broker reconciliation failed: " + "; ".join(mismatches)
+            self.control.client.table("risk_control_state").update({
+                "kill_switch": True,
+                "block_new_entries": True,
+                "reason": reason[:500],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", True).execute()
+            self._activity("critical", "broker_reconciliation", "LIVE broker position mismatch", reason)
+            raise RuntimeError(reason)
+
+        result = {
+            "ok": True,
+            "flat": managed is None and not broker_positions,
+            "managed_symbol": managed_symbol,
+            "managed_quantity": managed_quantity,
+            "broker_positions": broker_positions,
+        }
+        self._activity(
+            "success",
+            "broker_reconciliation",
+            "LIVE broker positions reconciled",
+            "flat" if result["flat"] else f"{managed_symbol}: {managed_quantity}",
+        )
+        return result
+
     def _emergency_live_exit(self, fraction: float, reason: str) -> dict[str, Any]:
         groww, _profile = self._groww_client()
         persistence = TradingPersistence(self.control.client, 1.0)
@@ -67,8 +130,19 @@ class LiveOracleControlAgent(OracleControlAgent):
         persistence.recover_submitting_entries(executor)
         persistence.recover_pending_exits(executor)
         _risk, position = persistence.restore_risk_state_for_mode("live")
+        broker_positions = executor.broker_nifty_positions()
         if position is None:
+            if broker_positions:
+                reason_text = "Broker has NIFTY F&O position(s) not represented by the managed DB position"
+                self.control.client.table("risk_control_state").update({
+                    "kill_switch": True, "block_new_entries": True, "reason": reason_text,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", True).execute()
+                raise RuntimeError(f"{reason_text}: {broker_positions}")
             return {"ok": True, "closed": False, "reason": "no open LIVE position"}
+        extras = [row for row in broker_positions if str(row.get("trading_symbol") or "") != position.trading_symbol]
+        if extras:
+            raise RuntimeError(f"unexpected additional NIFTY broker positions; refusing automated exit: {extras}")
         broker_quantity = executor.broker_position_quantity(position.trading_symbol)
         if broker_quantity is None or broker_quantity != position.quantity:
             self.control.client.table("risk_control_state").update({
@@ -158,6 +232,8 @@ class LiveOracleControlAgent(OracleControlAgent):
                 result = self._set_kill_switch(True, payload)
             elif command_name == "RESET_KILL_SWITCH":
                 result = self._set_kill_switch(False, payload)
+            elif command_name == "CHECK_LIVE_POSITIONS":
+                result = self._audit_live_positions()
             elif command_name == "RUN_REPLAY":
                 result = self._run_replay(payload)
             elif command_name == "STOP":
