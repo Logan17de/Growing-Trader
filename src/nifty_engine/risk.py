@@ -46,17 +46,25 @@ class RiskEngine:
             return RiskDecision(False, 0, 0.0, "consecutive-loss circuit breaker reached")
         if state.realized_pnl_today <= -state.account_equity * self.params.daily_loss_limit_pct:
             return RiskDecision(False, 0, 0.0, "daily loss circuit breaker reached")
-        if state.last_trade_at is not None:
-            if (now - state.last_trade_at).total_seconds() < self.params.cooldown_seconds:
-                return RiskDecision(False, 0, 0.0, "cooldown active")
+        if self.params.daily_profit_lock_pct > 0 and state.realized_pnl_today >= state.account_equity * self.params.daily_profit_lock_pct:
+            return RiskDecision(False, 0, 0.0, "daily profit lock reached")
+        if state.last_trade_at is not None and (now - state.last_trade_at).total_seconds() < self.params.cooldown_seconds:
+            return RiskDecision(False, 0, 0.0, "cooldown active")
         if contract.contract is None:
             return RiskDecision(False, 0, 0.0, "no eligible option contract")
 
         max_risk = state.account_equity * self.params.risk_per_trade_pct
+        if self.params.max_premium_per_trade > 0:
+            max_risk = min(max_risk, self.params.max_premium_per_trade)
         cost_per_lot = contract.contract.ltp * contract.contract.lot_size
         if cost_per_lot <= 0:
             return RiskDecision(False, 0, max_risk, "invalid option premium or lot size")
         lots = math.floor(max_risk / cost_per_lot)
+        if self.params.max_quantity > 0:
+            max_lots = self.params.max_quantity // contract.contract.lot_size
+            if max_lots < 1:
+                return RiskDecision(False, 0, max_risk, "maximum quantity is below one option lot")
+            lots = min(lots, max_lots)
         if lots < 1:
             return RiskDecision(False, 0, max_risk, "risk budget cannot fund one option lot")
         return RiskDecision(True, lots * contract.contract.lot_size, max_risk, "risk checks passed")
