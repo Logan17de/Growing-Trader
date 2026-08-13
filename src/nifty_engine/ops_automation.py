@@ -91,12 +91,16 @@ def _live_open_orders(control: SupabaseControlPlane) -> list[dict[str, Any]]:
     return [dict(row) for row in (response.data or [])]
 
 
-def _wait_flat(control: SupabaseControlPlane, timeout_seconds: float = 120.0) -> None:
+def _wait_flat(control: SupabaseControlPlane, mode: str, timeout_seconds: float = 120.0) -> None:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
+        live_orders = _live_open_orders(control)
+        if mode == "live" and not live_orders:
+            # Emergency broker exit can complete while the stopped runtime's status row is stale.
+            return
         payload = _runtime_payload(control)
         position = payload.get("open_position") or payload.get("open_paper_position")
-        if not position and not _live_open_orders(control):
+        if not position and not live_orders:
             return
         time.sleep(2.0)
     raise TimeoutError("position did not become flat before the shutdown deadline")
@@ -159,7 +163,7 @@ def scheduled_shutdown() -> dict[str, Any]:
         "reason": "Scheduled market-close shutdown",
     })
     _wait_command(control, kill_id, 60.0)
-    _wait_flat(control, 150.0)
+    _wait_flat(control, mode, 150.0)
 
     stop_id = _queue_command(control, "STOP_ENGINE")
     _wait_command(control, stop_id, 60.0)
