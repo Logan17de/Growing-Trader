@@ -13,36 +13,60 @@ export function StrategiesPanel({ status, refresh }: { status: ControlStatus; re
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [confirmPause, setConfirmPause] = useState(false);
+  const [confirmDeactivate, setConfirmDeactivate] = useState(false);
   const paper = status.paperEngine;
   const signal = status.latestSignal?.payload ?? null;
   const activeLevel = signal?.level.level_name ? status.levels.find((level) => level.name === signal.level.level_name) : undefined;
+  const enabled = status.strategyState?.enabled ?? paper.strategy_enabled ?? true;
 
   async function runCommand(command: ControlCommand) {
-    setBusy(command);
-    setNotice("");
+    setBusy(command); setNotice("");
     try {
       const response = await jsonRequest<{ duplicate?: boolean }>("/api/control/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command }) });
       setNotice(response.duplicate ? "This command is already queued or running." : `${command.replaceAll("_", " ")} queued for the Oracle worker.`);
       await refresh();
-    } catch (reason) {
-      setNotice(reason instanceof Error ? reason.message : "Command failed");
-    } finally {
-      setBusy("");
-      setConfirmPause(false);
-    }
+    } catch (reason) { setNotice(reason instanceof Error ? reason.message : "Command failed"); }
+    finally { setBusy(""); setConfirmPause(false); }
   }
 
-  const canStart = Boolean(status.worker.online && status.credentials.configured && !paper.running && !busy);
+  async function setStrategyEnabled(value: boolean) {
+    setBusy(value ? "activate" : "deactivate"); setNotice("");
+    try {
+      await jsonRequest("/api/control/config", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ strategyEnabled: value }) });
+      setNotice(value ? "Strategy activated. New paper entries can pass the normal risk checks." : "Strategy deactivated. Market collection can continue, but new entries are blocked.");
+      await refresh();
+    } catch (reason) { setNotice(reason instanceof Error ? reason.message : "Could not update strategy state"); }
+    finally { setBusy(""); setConfirmDeactivate(false); }
+  }
+
+  async function activateAndResume() {
+    if (!enabled) await setStrategyEnabled(true);
+    if (!paper.running) await runCommand("START_PAPER_ENGINE");
+  }
+
+  async function duplicateStrategy() {
+    setBusy("duplicate"); setNotice("");
+    try {
+      const version = status.strategyState?.version ?? paper.strategy_version ?? 1;
+      const name = `Level event v${version} copy ${new Date().toLocaleString("en-IN")}`;
+      await jsonRequest("/api/control/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "duplicate_strategy", name, description: "Snapshot created from the Strategies page." }) });
+      setNotice(`Saved a strategy preset: ${name}`);
+    } catch (reason) { setNotice(reason instanceof Error ? reason.message : "Could not duplicate strategy"); }
+    finally { setBusy(""); }
+  }
+
+  const canStart = Boolean(status.worker.online && status.credentials.configured && !paper.running && !busy && !status.riskControl?.kill_switch_enabled);
   const canStop = Boolean(status.worker.online && paper.running && !busy);
   return <>
     {notice && <div className="notice" role="status"><Icon name="activity" />{notice}</div>}
     <section className="terminal-section strategy-card card">
       <div className="strategy-header">
         <div className="title-with-icon"><div className="card-icon"><Icon name="strategy" /></div><div><p className="eyebrow">Level-event research</p><h2>NIFTY participation + futures confirmation</h2><p className="muted">Framework-independent Python strategy engine · Groww market data · paper execution</p></div></div>
-        <div className="strategy-mode-stack"><span className={`status-badge ${paper.running ? "good" : "warn"}`}><span className={`status-dot ${paper.running ? "good" : "warn"}`} />{paper.running ? "Active" : "Paused"}</span><span className="mode-badge"><span className="status-dot amber" />Paper</span></div>
+        <div className="strategy-mode-stack"><span className={`status-badge ${enabled && paper.running ? "good" : "warn"}`}><span className={`status-dot ${enabled && paper.running ? "good" : "warn"}`} />{!enabled ? "Deactivated" : paper.running ? "Active" : "Paused"}</span><span className="mode-badge"><span className="status-dot amber" />Paper</span></div>
       </div>
       <div className="strategy-stats">
         <div><span>Instrument</span><strong>NIFTY</strong></div>
+        <div><span>Version</span><strong>v{status.strategyState?.version ?? paper.strategy_version ?? 1}</strong></div>
         <div><span>Current signal</span><strong>{signal ? `${signal.event} · ${signal.direction}`.toUpperCase() : "Unavailable"}</strong></div>
         <div><span>Trades today</span><strong>{status.paperOrders.filter((order) => new Date(order.created_at).toDateString() === new Date().toDateString()).length}</strong></div>
         <div><span>Daily P&amp;L</span><strong>{status.paperTrades.some((trade) => new Date(trade.executed_at).toDateString() === new Date().toDateString() && trade.pnl !== null) ? formatCurrency(status.paperTrades.filter((trade) => new Date(trade.executed_at).toDateString() === new Date().toDateString()).reduce((sum, trade) => sum + (trade.pnl ?? 0), 0)) : "Unavailable"}</strong></div>
@@ -50,19 +74,22 @@ export function StrategiesPanel({ status, refresh }: { status: ControlStatus; re
         <div><span>Position</span><strong>{paper.open_paper_position?.trading_symbol ?? "None"}</strong></div>
       </div>
       <div className="strategy-actions">
-        <button className="primary" type="button" onClick={() => void runCommand("START_PAPER_ENGINE")} disabled={!canStart}>{busy === "START_PAPER_ENGINE" ? <Icon name="refresh" className="spin" /> : <Icon name="activity" />}Activate / resume</button>
+        <button className="primary" type="button" onClick={() => void activateAndResume()} disabled={Boolean(busy) || (enabled && paper.running) || (!canStart && !paper.running)}>{busy === "START_PAPER_ENGINE" || busy === "activate" ? <Icon name="refresh" className="spin" /> : <Icon name="activity" />}Activate / resume</button>
         <button className="secondary" type="button" onClick={() => setConfirmPause(true)} disabled={!canStop}><Icon name="stop" />Pause</button>
-        <button className="secondary" disabled>Deactivate</button><button className="secondary" disabled>Edit</button><button className="secondary" disabled>Duplicate</button>
+        <button className="secondary" type="button" onClick={() => setConfirmDeactivate(true)} disabled={!enabled || Boolean(busy)}>Deactivate</button>
+        <button className="secondary" type="button" onClick={() => document.getElementById("strategy-parameter-editor")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Edit</button>
+        <button className="secondary" type="button" onClick={() => void duplicateStrategy()} disabled={Boolean(busy)}>{busy === "duplicate" ? <Icon name="refresh" className="spin" /> : null}Duplicate</button>
         <button className="mode-action selected" disabled><span className="status-dot amber" />Paper mode</button><button className="mode-action live" disabled>Live mode unavailable</button>
       </div>
-      <p className="availability-note">Activate and Pause use the existing allow-listed paper-engine command pipeline. Other controls remain disabled until a strategy configuration service exists.</p>
+      <p className="availability-note">Pause stops the paper processing loop. Deactivate leaves collection available but blocks new entries. Edit writes the DB-backed thresholds; Duplicate stores a reusable parameter preset.</p>
     </section>
 
     <section className="dashboard-grid terminal-section">
       <article className="card span-7"><div className="section-heading compact"><div><p className="eyebrow">Explainability</p><h2>Latest signal reasoning</h2></div><span>{status.latestSignal ? new Date(status.latestSignal.observed_at).toLocaleString("en-IN") : "No observation"}</span></div><SignalExplanation signal={signal} level={activeLevel} /></article>
-      <article className="card span-5"><div className="section-heading compact"><div><p className="eyebrow">Runtime</p><h2>Strategy health</h2></div></div><div className="diagnostic-list"><div><span>Engine state</span><strong>{paper.state ?? "Unavailable"}</strong></div><div><span>Feed</span><strong className={paper.feed_connected ? "good" : "warn"}>{paper.feed_connected ? "Connected" : "Waiting"}</strong></div><div><span>Constituent coverage</span><strong>{paper.constituents_fresh ?? 0} / {paper.constituents_total ?? 50}</strong></div><div><span>Latest risk verdict</span><strong>{signal ? (signal.risk.allowed ? "Allow" : "Block") : "Unavailable"}</strong></div><div><span>Selected premium</span><strong>{signal?.contract.contract ? formatNumber(signal.contract.contract.ltp) : "Unavailable"}</strong></div></div></article>
+      <article className="card span-5"><div className="section-heading compact"><div><p className="eyebrow">Runtime</p><h2>Strategy health</h2></div></div><div className="diagnostic-list"><div><span>Strategy state</span><strong>{enabled ? "Enabled" : "Deactivated"}</strong></div><div><span>Engine state</span><strong>{paper.state ?? "Unavailable"}</strong></div><div><span>Feed</span><strong className={paper.feed_connected ? "good" : "warn"}>{paper.feed_connected ? "Connected" : "Waiting"}</strong></div><div><span>Constituent coverage</span><strong>{paper.constituents_fresh ?? 0} / {paper.constituents_total ?? 50}</strong></div><div><span>Latest risk verdict</span><strong>{signal ? (signal.risk.allowed ? "Allow" : "Block") : "Unavailable"}</strong></div><div><span>Selected premium</span><strong>{signal?.contract.contract ? formatNumber(signal.contract.contract.ltp) : "Unavailable"}</strong></div></div></article>
     </section>
-    <section className="terminal-section research-section"><div className="section-heading compact"><div><p className="eyebrow">Research telemetry</p><h2>Full strategy observability</h2></div><span>DB thresholds · 50-stock volume · dynamic exits</span></div><StrategyObservability embedded /></section>
-    <ConfirmDialog open={confirmPause} title="Pause the paper strategy?" description="This queues STOP_PAPER_ENGINE through the existing Oracle control plane. It stops new paper processing, but does not represent a live-market kill switch or manually close an open research position." confirmLabel="Pause paper engine" busy={busy === "STOP_PAPER_ENGINE"} onCancel={() => setConfirmPause(false)} onConfirm={() => void runCommand("STOP_PAPER_ENGINE")} />
+    <section className="terminal-section research-section" id="strategy-parameter-editor"><div className="section-heading compact"><div><p className="eyebrow">Research telemetry</p><h2>Full strategy observability</h2></div><span>DB thresholds · 50-stock volume · dynamic exits</span></div><StrategyObservability embedded editable /></section>
+    <ConfirmDialog open={confirmPause} title="Pause the paper strategy?" description="This queues STOP_PAPER_ENGINE. It stops paper processing but does not close the current paper position." confirmLabel="Pause paper engine" busy={busy === "STOP_PAPER_ENGINE"} onCancel={() => setConfirmPause(false)} onConfirm={() => void runCommand("STOP_PAPER_ENGINE")} />
+    <ConfirmDialog open={confirmDeactivate} title="Deactivate the strategy?" description="Market collection can keep running, but the risk engine will block all new paper entries until the strategy is activated again." confirmLabel="Deactivate strategy" busy={busy === "deactivate"} onCancel={() => setConfirmDeactivate(false)} onConfirm={() => void setStrategyEnabled(false)} />
   </>;
 }
