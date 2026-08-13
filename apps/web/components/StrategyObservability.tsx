@@ -13,6 +13,11 @@ function number(value: number | null | undefined, digits = 3) {
     : "—";
 }
 
+function signed(value: number | null | undefined, suffix = "", digits = 2) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  return `${value > 0 ? "+" : ""}${number(value, digits)}${suffix}`;
+}
+
 export default function StrategyObservability({ embedded = false, signal = null, paperEngine, levels = [] }: { embedded?: boolean; signal?: SignalPayload | null; paperEngine?: PaperEngineStatus; levels?: StrategyLevel[] }) {
   const { data, error } = useResearchData();
   const groups = useMemo(() => {
@@ -28,6 +33,10 @@ export default function StrategyObservability({ embedded = false, signal = null,
   const mode = paper.mode ?? "paper";
   const activePosition = paper.open_position ?? paper.open_paper_position;
   const executionLabel = mode === "live" ? (paper.live_armed ? "LIVE · ARMED" : "LIVE · DISARMED") : "PAPER";
+  const watch = data?.marketWatch ?? [];
+  const latestWatch = watch[0];
+  const labeled15m = watch.filter((row) => row.nifty_move_15m_bps != null).length;
+  const bigMoves = data?.bigMoves ?? [];
 
   return <section className={embedded ? "strategy-research-embed" : "strategy-research-standalone"}>
     {!embedded && <header className="research-standalone-header">
@@ -45,6 +54,26 @@ export default function StrategyObservability({ embedded = false, signal = null,
     </section>
 
     {embedded && <StrategyLiveCalculations signal={signal} paper={paper} levels={levels} parameters={data?.strategyParameters ?? []} />}
+
+    <section className="card terminal-section">
+      <div className="section-heading compact"><div><p className="eyebrow">Market Watch · research only</p><h2>Strategy discovery recorder</h2></div><span className="status-badge good">OBSERVE · LABEL · STUDY</span></div>
+      <p className="muted threshold-intro">This layer never places an order. It records cash participation, whole-NIFTY volume, futures price/volume/OI/basis, option volume/OI/IV positioning, VWAP and the current decision state, then retrospectively labels what NIFTY did 1/3/5/10/15 minutes later. Those future labels are research outcomes only and are never fed into LIVE decisions.</p>
+      <section className="market-secondary-grid" aria-label="Market watch recorder status">
+        <div><span>Recent observations</span><strong>{watch.length}</strong><small>Latest 12-hour API window</small></div>
+        <div><span>15m labels ready</span><strong>{labeled15m}</strong><small>Observations old enough to evaluate</small></div>
+        <div><span>Recent big-move rows</span><strong>{bigMoves.length}</strong><small>Research thresholds only</small></div>
+        <div><span>Latest observation</span><strong>{latestWatch ? new Date(latestWatch.observed_at).toLocaleTimeString("en-IN") : "—"}</strong><small>{latestWatch?.event?.replaceAll("_", " ") ?? "Waiting for data"}</small></div>
+        <div><span>NIFTY</span><strong>{number(latestWatch?.nifty_ltp, 2)}</strong><small>{signed(latestWatch?.vwap_distance_bps, " bps")} vs synthetic VWAP</small></div>
+        <div><span>50-stock Δ volume</span><strong>{number(latestWatch?.constituent_volume_delta, 0)}</strong><small>Latest observation interval</small></div>
+        <div><span>Cash pressure</span><strong className={(latestWatch?.cash_pressure ?? 0) >= 0 ? "good" : "bad"}>{signed(latestWatch?.cash_pressure)}</strong><small>Breadth {signed(latestWatch?.breadth)}</small></div>
+        <div><span>Futures</span><strong className={(latestWatch?.futures_score ?? 0) >= 0 ? "good" : "bad"}>{signed(latestWatch?.futures_score)}</strong><small>OI {signed(latestWatch?.futures_oi_change_pct, "%")}</small></div>
+        <div><span>Options positioning</span><strong className={(latestWatch?.option_score ?? 0) >= 0 ? "good" : "bad"}>{signed(latestWatch?.option_score)}</strong><small>OI imbalance {signed(latestWatch?.option_oi_change_imbalance)}</small></div>
+        <div><span>Combined market score</span><strong className={(latestWatch?.combined_direction_score ?? 0) >= 0 ? "good" : "bad"}>{signed(latestWatch?.combined_direction_score)}</strong><small>{latestWatch?.direction?.toUpperCase() ?? "—"}</small></div>
+      </section>
+      <div className="section-heading compact"><div><p className="eyebrow">Recent labeled events</p><h3>Big-move research windows</h3></div><span>Retrospective outcomes</span></div>
+      {bigMoves.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>Observed</th><th>NIFTY</th><th>1m</th><th>5m</th><th>15m</th><th>Cash</th><th>Futures</th><th>Options</th><th>Volume</th></tr></thead><tbody>{bigMoves.slice(0, 8).map((row) => <tr key={row.observed_at}><td>{new Date(row.observed_at).toLocaleTimeString("en-IN")}</td><td className="numeric">{number(row.nifty_ltp, 2)}</td><td className={`numeric ${(row.nifty_move_1m_bps ?? 0) >= 0 ? "good" : "bad"}`}>{signed(row.nifty_move_1m_bps, " bps")}</td><td className={`numeric ${(row.nifty_move_5m_bps ?? 0) >= 0 ? "good" : "bad"}`}>{signed(row.nifty_move_5m_bps, " bps")}</td><td className={`numeric ${(row.nifty_move_15m_bps ?? 0) >= 0 ? "good" : "bad"}`}>{signed(row.nifty_move_15m_bps, " bps")}</td><td className="numeric">{signed(row.cash_pressure)}</td><td className="numeric">{signed(row.futures_score)}</td><td className="numeric">{signed(row.option_score)}</td><td className="numeric">{number(row.constituent_volume_delta, 0)}</td></tr>)}</tbody></table></div> : <p className="muted">No observation in the loaded window has crossed the current research-only big-move thresholds yet.</p>}
+      <p className="availability-note">The raw snapshot history remains the source of truth. A weekday GitHub Actions artifact exports the flattened log as JSONL so market-move conditions can be inspected later without putting high-frequency data in Git history.</p>
+    </section>
 
     <section className="card terminal-section strategy-volume-card">
       <div className="section-heading compact"><div><p className="eyebrow">Cross-market context</p><h2>Volume behind the decision</h2></div><span>{paper.running ? "Collecting" : "Waiting"} · 1-minute buckets</span></div>
