@@ -2,11 +2,11 @@ import { isDashboardAuthorized } from "@/lib/dashboardAuth";
 import { serverSupabase } from "@/lib/serverSupabase";
 
 const ALLOWED = new Set([
-  "TEST_AUTH", "TEST_MARKET_DATA", "START_PAPER_ENGINE", "STOP_PAPER_ENGINE", "STOP",
+  "TEST_AUTH", "TEST_MARKET_DATA", "START_PAPER_ENGINE", "STOP_PAPER_ENGINE", "START_ENGINE", "STOP_ENGINE", "STOP",
   "EXIT_PAPER_POSITION", "UPDATE_PAPER_POSITION", "KILL_SWITCH", "RESET_KILL_SWITCH", "RUN_REPLAY",
 ]);
 
-const NEEDS_CREDENTIALS = new Set(["TEST_AUTH", "TEST_MARKET_DATA", "START_PAPER_ENGINE"]);
+const NEEDS_CREDENTIALS = new Set(["TEST_AUTH", "TEST_MARKET_DATA", "START_PAPER_ENGINE", "START_ENGINE"]);
 
 function workerIsOnline(worker: { last_heartbeat?: string; state?: string } | null): boolean {
   if (!worker?.last_heartbeat || worker.state === "stopped") return false;
@@ -52,10 +52,19 @@ export async function POST(request: Request) {
   }
 
   if (["EXIT_PAPER_POSITION", "UPDATE_PAPER_POSITION"].includes(command)) {
-    const { data: paper, error } = await supabase.from("paper_engine_status").select("payload").eq("worker_id", "oracle-primary").maybeSingle();
+    const { data: runtime, error } = await supabase.from("paper_engine_status").select("payload").eq("worker_id", "oracle-primary").maybeSingle();
     if (error) return Response.json({ error: error.message }, { status: 503 });
-    const position = paper?.payload && typeof paper.payload === "object" ? (paper.payload as Record<string, unknown>).open_paper_position : null;
-    if (!position) return Response.json({ error: "No open paper position" }, { status: 409 });
+    const payloadRecord = runtime?.payload && typeof runtime.payload === "object" ? runtime.payload as Record<string, unknown> : {};
+    const position = payloadRecord.open_position ?? payloadRecord.open_paper_position ?? null;
+    if (!position) return Response.json({ error: "No open trading position" }, { status: 409 });
+  }
+
+  if (command === "START_ENGINE") {
+    const { data: execution, error } = await supabase.from("execution_control_state").select("mode,live_armed,max_order_premium").eq("id", true).maybeSingle();
+    if (error) return Response.json({ error: error.message }, { status: 503 });
+    if (execution?.mode === "live" && (!execution.live_armed || Number(execution.max_order_premium ?? 0) <= 0)) {
+      return Response.json({ error: "LIVE execution must be explicitly armed with a positive max order premium" }, { status: 409 });
+    }
   }
 
   const { data, error } = await supabase.from("engine_commands").insert({ command, payload }).select("id, command, status, created_at").single();
