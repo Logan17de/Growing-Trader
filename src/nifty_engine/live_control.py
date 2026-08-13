@@ -5,18 +5,18 @@ import logging
 from typing import Any
 
 from .control_plane import OracleControlAgent
-from .paper_runner import PaperEngineRuntime
 from .replay_service import replay_stored_history
+from .trading_runner import TradingEngineRuntime
 
 logger = logging.getLogger(__name__)
 
 
 class LiveOracleControlAgent(OracleControlAgent):
-    """Oracle control worker with a separately startable/stoppable paper engine."""
+    """Oracle control worker with a separately startable trading engine."""
 
     def __init__(self, control: Any, **kwargs: Any) -> None:
         super().__init__(control, **kwargs)
-        self.paper_runtime = PaperEngineRuntime(control)
+        self.paper_runtime = TradingEngineRuntime(control)
 
     def _write_paper_status(self) -> None:
         status = self.paper_runtime.status()
@@ -34,17 +34,23 @@ class LiveOracleControlAgent(OracleControlAgent):
         except Exception:
             logger.debug("activity table unavailable", exc_info=True)
 
-    def _start_paper_engine(self) -> dict[str, Any]:
+    def _start_engine(self) -> dict[str, Any]:
         self.groww_authenticated = True
         status = self.paper_runtime.start(self._groww_client)
         self.last_error = None
         self._write_paper_status()
-        return {"ok": True, "paper_engine": status}
+        return {"ok": True, "trading_engine": status, "paper_engine": status}
 
-    def _stop_paper_engine(self) -> dict[str, Any]:
+    def _stop_engine(self) -> dict[str, Any]:
         status = self.paper_runtime.stop()
         self._write_paper_status()
-        return {"ok": True, "paper_engine": status}
+        return {"ok": True, "trading_engine": status, "paper_engine": status}
+
+    def _force_paper_mode(self) -> None:
+        self.control.client.table("execution_control_state").update({
+            "mode": "paper", "live_armed": False, "armed_at": None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", True).execute()
 
     def _set_kill_switch(self, enabled: bool, payload: dict[str, Any]) -> dict[str, Any]:
         close_position = bool(payload.get("close_position", True))
@@ -92,9 +98,12 @@ class LiveOracleControlAgent(OracleControlAgent):
             elif command_name == "TEST_MARKET_DATA":
                 result = self._test_market_data()
             elif command_name == "START_PAPER_ENGINE":
-                result = self._start_paper_engine()
-            elif command_name == "STOP_PAPER_ENGINE":
-                result = self._stop_paper_engine()
+                self._force_paper_mode()
+                result = self._start_engine()
+            elif command_name in {"START_ENGINE"}:
+                result = self._start_engine()
+            elif command_name in {"STOP_PAPER_ENGINE", "STOP_ENGINE"}:
+                result = self._stop_engine()
             elif command_name == "EXIT_PAPER_POSITION":
                 result = self.paper_runtime.request_exit(float(payload.get("fraction", 1.0)))
             elif command_name == "UPDATE_PAPER_POSITION":
@@ -109,7 +118,7 @@ class LiveOracleControlAgent(OracleControlAgent):
                 self.paper_runtime.stop()
                 self._write_paper_status()
                 self.state = "stopped"
-                result = {"ok": True, "state": self.state, "paper_engine": self.paper_runtime.status()}
+                result = {"ok": True, "state": self.state, "trading_engine": self.paper_runtime.status(), "paper_engine": self.paper_runtime.status()}
             else:
                 raise RuntimeError(f"unsupported command: {command_name}")
             self.control.complete_command(command_id, result=result)
@@ -131,6 +140,6 @@ class LiveOracleControlAgent(OracleControlAgent):
             try:
                 self._write_paper_status()
             except Exception:
-                logger.exception("paper-engine status write failed")
+                logger.exception("trading-engine status write failed")
 
         return not stop_requested
