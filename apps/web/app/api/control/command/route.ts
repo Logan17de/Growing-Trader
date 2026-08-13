@@ -16,7 +16,6 @@ const ALLOWED = new Set([
 ]);
 
 const NEEDS_CREDENTIALS = new Set(["TEST_AUTH", "TEST_MARKET_DATA", "START_PAPER_ENGINE"]);
-const MAY_QUEUE_OFFLINE = new Set(["KILL_SWITCH"]);
 
 function workerIsOnline(worker: { last_heartbeat?: string; state?: string } | null): boolean {
   if (!worker?.last_heartbeat || worker.state === "stopped") return false;
@@ -77,23 +76,49 @@ export async function POST(request: Request) {
   catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid command payload" }, { status: 400 }); }
 
   const supabase = serverSupabase();
-
-  if (command === "KILL_SWITCH") {
-    const enabled = Boolean(payload.enabled);
-    const { error } = await supabase.from("risk_control_state").upsert({
-      worker_id: "oracle-primary",
-      kill_switch_enabled: enabled,
-      reason: enabled ? String(payload.reason ?? "Dashboard kill switch") : null,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "worker_id" });
-    if (error) return Response.json({ error: error.message }, { status: 503 });
-  }
-
   const { data: worker, error: workerError } = await supabase.from("engine_status")
     .select("state,last_heartbeat").eq("worker_id", "oracle-primary").maybeSingle();
   if (workerError) return Response.json({ error: workerError.message }, { status: 503 });
   const online = workerIsOnline(worker);
-  if (!online && !MAY_QUEUE_OFFLINE.has(command)) return Response.json({ error: "Oracle worker is offline or stale" }, { status: 409 });
+
+  if (command === "KILL_SWITCH") {
+    const enabled = Boolean(payload.enabled);
+    const now = new Date().toISOString();
+    const { error } = await supabase.from("risk_control_state").upsert({
+      worker_id: "oracle-primary",
+      kill_switch_enabled: enabled,
+      reason: enabled ? String(payload.reason ?? "Dashboard kill switch") : null,
+      updated_at: now,
+    }, { onConflict: "worker_id" });
+    if (error) return Response.json({ error: error.message }, { status: 503 });
+
+    if (!enabled) {
+      await supabase.from("engine_commands").update({
+        status: "failed",
+        error: "Superseded by kill-switch reset",
+        completed_at: now,
+      }).eq("command", "KILL_SWITCH").eq("status", "queued");
+      return Response.json({ ok: true, persisted: true, enabled: false, workerOnline: online, commandQueued: false }, { status: 202 });
+    }
+
+    if (!Boolean(payload.closePosition)) {
+      return Response.json({ ok: true, persisted: true, enabled: true, workerOnline: online, commandQueued: false }, { status: 202 });
+    }
+
+    if (!online) {
+      return Response.json({
+        ok: true,
+        persisted: true,
+        enabled: true,
+        workerOnline: false,
+        commandQueued: false,
+        positionCloseAttempted: false,
+        warning: "Kill switch is active, but Oracle is offline so an open paper position cannot be closed until the worker is online.",
+      }, { status: 202 });
+    }
+  } else if (!online) {
+    return Response.json({ error: "Oracle worker is offline or stale" }, { status: 409 });
+  }
 
   if (command === "START_PAPER_ENGINE") {
     const { data: kill, error: killError } = await supabase.from("risk_control_state")
