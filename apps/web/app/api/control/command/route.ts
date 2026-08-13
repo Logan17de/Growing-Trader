@@ -96,12 +96,10 @@ export async function POST(request: Request) {
   if (!online && !MAY_QUEUE_OFFLINE.has(command)) return Response.json({ error: "Oracle worker is offline or stale" }, { status: 409 });
 
   if (command === "START_PAPER_ENGINE") {
-    const [{ data: kill }, { data: strategy }] = await Promise.all([
-      supabase.from("risk_control_state").select("kill_switch_enabled").eq("worker_id", "oracle-primary").maybeSingle(),
-      supabase.from("strategy_runtime_state").select("enabled").eq("strategy_id", "level-event").maybeSingle(),
-    ]);
-    if (kill?.kill_switch_enabled) return Response.json({ error: "Reset the kill switch before starting the paper engine" }, { status: 409 });
-    if (strategy?.enabled === false) return Response.json({ error: "Activate the strategy before starting the paper engine" }, { status: 409 });
+    const { data: kill, error: killError } = await supabase.from("risk_control_state")
+      .select("kill_switch_enabled").eq("worker_id", "oracle-primary").maybeSingle();
+    if (killError) return Response.json({ error: killError.message }, { status: 503 });
+    if (kill?.kill_switch_enabled) return Response.json({ error: "Reset the kill switch before starting paper market collection" }, { status: 409 });
   }
 
   if (NEEDS_CREDENTIALS.has(command)) {
