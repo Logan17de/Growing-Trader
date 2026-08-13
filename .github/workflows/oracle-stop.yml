@@ -1,0 +1,95 @@
+name: Oracle Market Stop
+
+on:
+  schedule:
+    - cron: "10 15 * * 1-5"
+      timezone: "Asia/Kolkata"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-lifecycle
+  cancel-in-progress: false
+
+env:
+  ORACLE_HOST: ${{ vars.ORACLE_HOST || '193.123.166.128' }}
+  ORACLE_USER: ${{ vars.ORACLE_USER || 'ubuntu' }}
+
+jobs:
+  stop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install OCI CLI
+        run: python -m pip install --disable-pip-version-check oci-cli
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_API_PRIVATE_KEY" > ~/.oci/api_key.pem
+          chmod 600 ~/.oci/api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=${HOME}/.oci/api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+
+      - name: Check Oracle state
+        id: state
+        env:
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          state="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."lifecycle-state"' --raw-output)"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "Current OCI state: $state"
+
+      - name: Configure Oracle SSH key
+        if: steps.state.outputs.state == 'RUNNING'
+        env:
+          ORACLE_SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$ORACLE_SSH_PRIVATE_KEY" > ~/.ssh/oracle
+          chmod 600 ~/.ssh/oracle
+
+      - name: Safely flatten and stop trading engine
+        if: steps.state.outputs.state == 'RUNNING'
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/oracle -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
+            'cd /home/ubuntu/Growing-Trader && set -a && source /home/ubuntu/api.env && set +a && .venv/bin/nifty-engine scheduled-shutdown'
+          ssh -i ~/.ssh/oracle -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
+            'sudo systemctl stop growing-trader'
+
+      - name: Soft-stop Oracle instance
+        if: steps.state.outputs.state == 'RUNNING'
+        env:
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          set -euo pipefail
+          oci compute instance action --instance-id "$OCI_INSTANCE_OCID" --action SOFTSTOP >/dev/null
+          oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --wait-for-state STOPPED --max-wait-seconds 900 >/dev/null
+
+      - name: Summary
+        if: success()
+        run: |
+          {
+            echo '### Oracle close automation complete'
+            echo '- New entries were blocked before shutdown'
+            echo '- Any managed position was required to become flat'
+            echo '- LIVE was disarmed for the next session'
+            echo '- Oracle was soft-stopped only after the safety checks passed'
+          } >> "$GITHUB_STEP_SUMMARY"
