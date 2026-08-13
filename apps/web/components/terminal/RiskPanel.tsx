@@ -28,7 +28,8 @@ export function RiskPanel({ status, refresh }: { status: ControlStatus; refresh:
   const position = status.paperEngine.open_paper_position;
   const exposure = position?.entry_price && position.quantity ? position.entry_price * position.quantity : null;
   const signal = status.latestSignal?.payload;
-  const equity = status.paperEngine.account_equity ?? status.engineSettings?.account_equity ?? Number(draft.account_equity || 0) || null;
+  const draftEquity = Number(draft.account_equity || 0);
+  const equity = status.paperEngine.account_equity ?? status.engineSettings?.account_equity ?? (draftEquity > 0 ? draftEquity : null);
   const exposurePct = exposure !== null && equity ? exposure / equity : null;
   const killEnabled = status.riskControl?.kill_switch_enabled ?? status.paperEngine.kill_switch_enabled ?? false;
 
