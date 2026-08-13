@@ -6,14 +6,15 @@ import { EmptyState } from "@/components/terminal/EmptyState";
 import { Icon } from "@/components/terminal/Icon";
 import { MetricCard } from "@/components/terminal/MetricCard";
 import { jsonRequest } from "@/lib/controlClient";
-import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
+import { formatCurrency, formatPercent } from "@/lib/format";
 import { calculatePaperAnalytics } from "@/lib/terminalAnalytics";
 import type { ControlStatus, TerminalConfig } from "@/lib/terminalTypes";
 
 const RISK_KEYS = [
   "risk_per_trade_pct", "daily_loss_limit_pct", "daily_profit_lock_pct", "max_trades_per_day",
   "max_consecutive_losses", "max_quantity", "max_premium_per_trade", "cooldown_seconds",
-  "min_signal_confidence", "max_data_age_seconds", "opening_no_entry_minutes", "entry_cutoff_minutes_before_close",
+  "min_signal_confidence", "max_data_age_seconds", "opening_no_entry_minutes", "entry_cutoff_enabled",
+  "entry_cutoff_minutes_before_close",
 ] as const;
 
 export function RiskPanel({ status, refresh }: { status: ControlStatus; refresh: () => Promise<void> }) {
@@ -77,7 +78,7 @@ export function RiskPanel({ status, refresh }: { status: ControlStatus; refresh:
     </section>
 
     <section className="dashboard-grid terminal-section">
-      <article className="card span-7"><div className="section-heading compact"><div><p className="eyebrow">Risk controls</p><h2>Global limits</h2></div><button className="primary" type="button" onClick={() => void saveLimits()} disabled={Boolean(busy)}>{busy === "save" ? "Saving…" : "Save limits"}</button></div><div className="form-grid two"><label className="field"><span>Paper account equity</span><input type="number" min="1" step="1000" value={draft.account_equity ?? ""} onChange={(event) => setDraft((current) => ({ ...current, account_equity: event.target.value }))} /></label>{RISK_KEYS.map((key) => { const meta = parameterMeta.get(key); return <label className="field" key={key}><span>{meta?.description ?? key.replaceAll("_", " ")} {meta?.unit ? `(${meta.unit})` : ""}</span><input type="number" step="any" value={draft[key] ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [key]: event.target.value }))} /></label>; })}</div><p className="availability-note">Zero disables the optional daily-profit lock, max quantity and absolute max-premium limits. The one-position rule remains fixed at one position by design.</p></article>
+      <article className="card span-7"><div className="section-heading compact"><div><p className="eyebrow">Risk controls</p><h2>Global limits</h2></div><button className="primary" type="button" onClick={() => void saveLimits()} disabled={Boolean(busy)}>{busy === "save" ? "Saving…" : "Save limits"}</button></div><div className="form-grid two"><label className="field"><span>Paper account equity</span><input type="number" min="1" step="1000" value={draft.account_equity ?? ""} onChange={(event) => setDraft((current) => ({ ...current, account_equity: event.target.value }))} /></label>{RISK_KEYS.map((key) => { const meta = parameterMeta.get(key); if (meta?.unit === "bool") return <label className="field" key={key}><span>{meta.description}</span><select value={draft[key] ?? "0"} onChange={(event) => setDraft((current) => ({ ...current, [key]: event.target.value }))}><option value="1">Enabled</option><option value="0">Disabled</option></select></label>; return <label className="field" key={key}><span>{meta?.description ?? key.replaceAll("_", " ")} {meta?.unit ? `(${meta.unit})` : ""}</span><input type="number" step="any" value={draft[key] ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [key]: event.target.value }))} /></label>; })}</div><p className="availability-note">Zero disables the optional daily-profit lock, max quantity and absolute max-premium limits. The one-position rule remains fixed at one position by design.</p></article>
       <article className="card span-5 emergency-card"><div className="emergency-heading"><div className="dialog-icon"><Icon name="shield" /></div><div><p className="eyebrow">Emergency controls</p><h2>Execution safety</h2></div></div><p className="muted">The kill switch is persisted before Oracle processes the command. Once engaged, new entries stay blocked across paper-engine restarts. You can also request the current paper position to be closed at the latest available option mark.</p><button className="danger button-wide" type="button" onClick={() => setConfirmStop(true)} disabled={!status.worker.online || !status.paperEngine.running || Boolean(busy)}><span>Pause paper processing</span><Icon name="stop" /></button>{killEnabled ? <button className="primary button-wide" type="button" onClick={() => void command("KILL_SWITCH", { enabled: false })} disabled={Boolean(busy)}><Icon name="shield" />Reset kill switch</button> : <button className="kill-switch" type="button" onClick={() => setConfirmKill(true)} disabled={Boolean(busy)}><Icon name="shield" /><span><strong>KILL SWITCH</strong><small>Block entries + close current paper position</small></span></button>}<p className="availability-note">Paper-only. No broker cancel/close API is called because live Groww order execution is still intentionally unavailable.</p></article>
     </section>
 
