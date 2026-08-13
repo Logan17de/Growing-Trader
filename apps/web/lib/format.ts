@@ -4,6 +4,12 @@ export function formatNumber(value?: number | null, digits = 2): string {
     : "Unavailable";
 }
 
+export function formatCompact(value?: number | null): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? new Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 1 }).format(value)
+    : "Unavailable";
+}
+
 export function formatCurrency(value?: number | null): string {
   return typeof value === "number" && Number.isFinite(value)
     ? value.toLocaleString("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2 })

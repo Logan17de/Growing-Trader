@@ -1,49 +1,25 @@
-import { BackendUnavailable, EmptyState } from "@/components/terminal/EmptyState";
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { EmptyState } from "@/components/terminal/EmptyState";
 import { MetricCard } from "@/components/terminal/MetricCard";
-import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format";
+import { jsonRequest } from "@/lib/controlClient";
+import { formatCompact, formatCurrency, formatNumber, formatPercent } from "@/lib/format";
 import type { ControlStatus } from "@/lib/terminalTypes";
 
+type Constituent={observed_at:string;symbol:string;sector:string|null;price:number;previous_price:number;move_pct:number;cumulative_volume:number;volume_delta:number;volume_rate:number;relative_volume:number;index_weight:number;is_heavyweight:boolean};
+type OptionRow={observed_at:string;expiry:string;underlying_ltp:number|null;strike:number;option_type:"CE"|"PE";trading_symbol:string;ltp:number;open_interest:number;volume:number;delta:number|null;gamma:number|null;theta:number|null;vega:number|null;rho:number|null;iv:number|null;bid_price:number|null;ask_price:number|null};
+type MarketPayload={constituents:Constituent[];optionChain:OptionRow[];summary:{constituentObservedAt:string|null;optionObservedAt:string|null;pcrOi:number|null;pcrVolume:number|null;callIv:number|null;putIv:number|null}};
+
 export function MarketOverviewPanel({ status }: { status: ControlStatus }) {
-  const paper = status.paperEngine;
-  const basis = typeof paper.future_ltp === "number" && typeof paper.nifty_ltp === "number" ? paper.future_ltp - paper.nifty_ltp : null;
-  const deployed = paper.open_paper_position?.entry_price && paper.open_paper_position.quantity
-    ? paper.open_paper_position.entry_price * paper.open_paper_position.quantity
-    : null;
+  const paper=status.paperEngine; const[detail,setDetail]=useState<MarketPayload|null>(null);const[error,setError]=useState("");
+  useEffect(()=>{let mounted=true;async function load(){try{const data=await jsonRequest<MarketPayload>("/api/control/market");if(mounted){setDetail(data);setError("");}}catch(e){if(mounted)setError(e instanceof Error?e.message:"Market detail unavailable");}}void load();const timer=window.setInterval(()=>void load(),15000);return()=>{mounted=false;window.clearInterval(timer);};},[]);
+  const sectors=useMemo(()=>{const map=new Map<string,{move:number;count:number;volume:number}>();for(const row of detail?.constituents??[]){const key=row.sector??"Other";const item=map.get(key)??{move:0,count:0,volume:0};item.move+=row.move_pct;item.count+=1;item.volume+=row.volume_delta;map.set(key,item);}return[...map.entries()].map(([sector,item])=>({sector,move:item.count?item.move/item.count:0,volume:item.volume,count:item.count})).sort((a,b)=>b.move-a.move);},[detail]);
+  const basis=paper.nifty_ltp&&paper.future_ltp?paper.future_ltp-paper.nifty_ltp:null;
   return <>
-    <section className="terminal-metric-grid six" aria-label="Market snapshot">
-      <MetricCard label="NIFTY spot" value={formatNumber(paper.nifty_ltp)} detail={paper.last_quote_scan ? `Quote scan ${formatDateTime(paper.last_quote_scan)}` : "Awaiting quote scan"} icon="chart" unavailable={typeof paper.nifty_ltp !== "number"} />
-      <MetricCard label="NIFTY futures" value={formatNumber(paper.future_ltp)} detail={paper.future_symbol ?? "Instrument unavailable"} icon="activity" unavailable={typeof paper.future_ltp !== "number"} />
-      <MetricCard label="Spot / futures basis" value={basis === null ? undefined : `${basis >= 0 ? "+" : ""}${formatNumber(basis)} pts`} detail="Derived from authenticated spot and futures LTP" tone={basis === null ? "neutral" : basis >= 0 ? "positive" : "negative"} unavailable={basis === null} />
-      <MetricCard label="Fresh constituents" value={`${paper.constituents_fresh ?? 0} / ${paper.constituents_total ?? 50}`} detail={`${paper.quote_successes ?? 0} successful quote reads`} icon="positions" />
-      <MetricCard label="Option contracts" value={formatNumber(paper.option_contract_count, 0)} detail={paper.option_expiry ? `Expiry ${paper.option_expiry}` : "Expiry unavailable"} icon="orders" unavailable={typeof paper.option_contract_count !== "number"} />
-      <MetricCard label="Market exposure" value={formatCurrency(deployed)} detail={deployed === null ? undefined : "Current paper premium deployed"} icon="shield" unavailable={deployed === null} />
-      <MetricCard label="50-stock volume" value={formatNumber(paper.whole_nifty_volume_delta, 0)} detail="Full-session aggregate share-volume delta" unavailable={typeof paper.whole_nifty_volume_delta !== "number"} />
-      <MetricCard label="50-stock turnover" value={formatCurrency(paper.whole_nifty_turnover)} detail="Aggregate constituent turnover" unavailable={typeof paper.whole_nifty_turnover !== "number"} />
-      <MetricCard label="Market breadth" value={typeof paper.breadth === "number" ? formatNumber(paper.breadth, 3) : undefined} detail="Engine aggregate breadth score" unavailable={typeof paper.breadth !== "number"} />
-      <MetricCard label="Participation" value={typeof paper.participation === "number" ? formatNumber(paper.participation, 3) : undefined} detail="Fresh constituent participation" unavailable={typeof paper.participation !== "number"} />
-      <MetricCard label="Synthetic VWAP" value={formatNumber(paper.synthetic_vwap)} detail={typeof paper.vwap_score === "number" ? `VWAP score ${formatNumber(paper.vwap_score, 3)}` : "VWAP score unavailable"} unavailable={typeof paper.synthetic_vwap !== "number"} />
-      <MetricCard label="Options activity" value={paper.option_direction_ready ? formatNumber(paper.option_direction_score, 3) : undefined} detail={paper.option_direction_ready ? "Cross-chain direction score" : "Option activity warming or unavailable"} unavailable={!paper.option_direction_ready || typeof paper.option_direction_score !== "number"} />
-    </section>
-
-    <section className="dashboard-grid terminal-section">
-      <article className="card span-8">
-        <div className="section-heading compact"><div><p className="eyebrow">Market structure</p><h2>Support and resistance</h2></div><span>Dashboard-managed levels</span></div>
-        {status.levels.length === 0 ? <EmptyState icon="layers" title="No active levels" description="Create support and resistance levels from the dashboard. The engine reads the same persisted records." /> : <div className="level-ladder">{status.levels.map((level) => <div key={level.id}><span className={`level-kind ${level.kind}`}>{level.kind}</span><strong>{formatNumber(level.price)}</strong><div><span>{level.name}</span><small>{level.source} · {level.enabled ? "enabled" : "disabled"}</small></div></div>)}</div>}
-      </article>
-      <article className="card span-4">
-        <div className="section-heading compact"><div><p className="eyebrow">Data quality</p><h2>Feed health</h2></div></div>
-        <div className="diagnostic-list">
-          <div><span>Feed</span><strong className={paper.feed_connected ? "good" : "warn"}>{paper.feed_connected ? "Connected" : "Waiting"}</strong></div>
-          <div><span>Data age</span><strong>{typeof paper.data_age_seconds === "number" ? `${paper.data_age_seconds.toFixed(1)}s` : "Unavailable"}</strong></div>
-          <div><span>Weighting</span><strong>{paper.weighting ?? "Unavailable"}</strong></div>
-          <div><span>Universe date</span><strong>{paper.universe_as_of ?? "Unavailable"}</strong></div>
-        </div>
-      </article>
-    </section>
-
-    <section className="dashboard-grid terminal-section">
-      <article className="card span-6"><div className="section-heading compact"><div><p className="eyebrow">Derivatives</p><h2>Option chain, PCR &amp; IV</h2></div></div><BackendUnavailable title="Option-chain rows are not exposed to the web app" description="The paper worker consumes real chain data for contract selection, but the authenticated status API currently exposes only expiry and contract count. No strikes, OI, PCR, or IV are invented here." /></article>
-      <article className="card span-6"><div className="section-heading compact"><div><p className="eyebrow">Constituents</p><h2>Movement &amp; sector heatmap</h2></div></div><BackendUnavailable title="Per-symbol and sector snapshots are not persisted" description="Real aggregate breadth, participation, heavyweight, volume, and turnover telemetry are shown above. Per-constituent movement, weighted contribution rows, and sector membership are still absent from the storage contract." /></article>
-    </section>
+    {error&&<div className="error-banner">{error}</div>}
+    <section className="terminal-metric-grid four"><MetricCard label="NIFTY" value={formatNumber(paper.nifty_ltp)} detail={paper.synthetic_vwap?`VWAP ${formatNumber(paper.synthetic_vwap)}`:"Synthetic VWAP warming"} icon="chart"/><MetricCard label="Nearest future" value={formatNumber(paper.future_ltp)} detail={paper.future_symbol??"Unavailable"}/><MetricCard label="Futures basis" value={basis==null?"Unavailable":`${basis>=0?"+":""}${formatNumber(basis)} pts`} unavailable={basis==null}/><MetricCard label="Fresh constituents" value={`${paper.constituents_fresh??0}/${paper.constituents_total??50}`} detail={`Weighting: ${paper.weighting??"unknown"}`} /></section>
+    <section className="dashboard-grid terminal-section"><article className="card span-7"><div className="section-heading compact"><div><p className="eyebrow">NIFTY-50 tape</p><h2>Constituent movement &amp; participation</h2></div><span>{detail?.summary.constituentObservedAt?new Date(detail.summary.constituentObservedAt).toLocaleTimeString("en-IN"):"Waiting"}</span></div>{detail?.constituents.length?<div className="table-scroll"><table className="data-table"><thead><tr><th>Symbol</th><th>Sector</th><th>Price</th><th>Move</th><th>Δ volume</th><th>RVOL</th><th>Role</th></tr></thead><tbody>{detail.constituents.map((row)=><tr key={row.symbol}><td><strong>{row.symbol}</strong></td><td>{row.sector??"Other"}</td><td className="numeric">{formatNumber(row.price)}</td><td className={`numeric ${row.move_pct>=0?"good":"bad"}`}>{row.move_pct>=0?"+":""}{formatNumber(row.move_pct)}%</td><td className="numeric">{formatCompact(row.volume_delta)}</td><td className="numeric">{formatNumber(row.relative_volume,2)}×</td><td>{row.is_heavyweight?<span className="status-badge good">Heavyweight</span>:"Constituent"}</td></tr>)}</tbody></table></div>:<EmptyState icon="chart" title="Constituent telemetry is warming" description="Rows are persisted after each valid Oracle quote scan."/>}</article><article className="card span-5"><div className="section-heading compact"><div><p className="eyebrow">Sector breadth</p><h2>Heatmap summary</h2></div></div>{sectors.length?<div className="diagnostic-list">{sectors.map((row)=><div key={row.sector}><span>{row.sector} · {row.count}</span><strong className={row.move>=0?"good":"bad"}>{row.move>=0?"+":""}{formatNumber(row.move)}% · {formatCompact(row.volume)}</strong></div>)}</div>:<p className="muted">Sector telemetry will appear after the first detailed scan.</p>}<div className="diagnostic-list"><div><span>Whole-NIFTY Δ volume</span><strong>{formatCompact(paper.whole_nifty_volume_delta)}</strong></div><div><span>Turnover</span><strong>{formatCurrency(paper.whole_nifty_turnover)}</strong></div><div><span>Breadth</span><strong>{formatPercent(paper.breadth)}</strong></div><div><span>Participation</span><strong>{formatPercent(paper.participation)}</strong></div><div><span>Heavyweight score</span><strong>{formatNumber(paper.heavyweight_score)}</strong></div></div></article></section>
+    <section className="terminal-section card"><div className="section-heading compact"><div><p className="eyebrow">Near-ATM chain</p><h2>NIFTY options</h2></div><div className="section-meta"><span>PCR OI {formatNumber(detail?.summary.pcrOi)}</span><span>PCR Vol {formatNumber(detail?.summary.pcrVolume)}</span><span>CE IV {detail?.summary.callIv!=null?`${formatNumber(detail.summary.callIv)}%`:"—"}</span><span>PE IV {detail?.summary.putIv!=null?`${formatNumber(detail.summary.putIv)}%`:"—"}</span></div></div>{detail?.optionChain.length?<div className="table-scroll"><table className="data-table"><thead><tr><th>Strike</th><th>Type</th><th>LTP</th><th>OI</th><th>Volume</th><th>IV</th><th>Delta</th><th>Theta</th><th>Spread</th></tr></thead><tbody>{detail.optionChain.map((row)=><tr key={`${row.strike}-${row.option_type}`}><td className="numeric"><strong>{formatNumber(row.strike,0)}</strong></td><td><span className={`status-badge ${row.option_type==="CE"?"good":"warn"}`}>{row.option_type}</span></td><td className="numeric">{formatNumber(row.ltp)}</td><td className="numeric">{formatCompact(row.open_interest)}</td><td className="numeric">{formatCompact(row.volume)}</td><td className="numeric">{row.iv!=null?`${formatNumber(row.iv)}%`:"—"}</td><td className="numeric">{formatNumber(row.delta)}</td><td className="numeric">{formatNumber(row.theta)}</td><td className="numeric">{row.bid_price!=null&&row.ask_price!=null?formatNumber(row.ask_price-row.bid_price):"—"}</td></tr>)}</tbody></table></div>:<EmptyState icon="chart" title="Option-chain telemetry is warming" description="Oracle persists the nearest 11 strikes after each option-chain refresh."/>}<p className="availability-note">This view is the persisted near-ATM chain used by the paper engine. PCR/IV are descriptive research telemetry; they are not treated as buyer/seller identity.</p></section>
   </>;
 }
