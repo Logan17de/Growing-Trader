@@ -80,7 +80,7 @@ export type ControlCommand =
   | "TEST_AUTH" | "TEST_MARKET_DATA" | "START_PAPER_ENGINE" | "STOP_PAPER_ENGINE" | "START_ENGINE" | "STOP_ENGINE" | "STOP"
   | "EXIT_PAPER_POSITION" | "UPDATE_PAPER_POSITION" | "KILL_SWITCH" | "RESET_KILL_SWITCH" | "CHECK_LIVE_POSITIONS" | "RUN_REPLAY";
 
-export type TerminalRoute = "dashboard" | "market" | "strategies" | "positions" | "orders" | "analytics" | "replay" | "risk" | "activity" | "settings";
+export type TerminalRoute = "dashboard" | "market" | "strategies" | "positions" | "orders" | "analytics" | "marketWatch" | "replay" | "risk" | "activity" | "settings";
 
 export type BacktestRequest = {
   instrument: string; date: string; startTime: string; endTime: string; strategyId: string; strategyVersion: string;
