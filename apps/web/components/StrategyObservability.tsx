@@ -55,8 +55,8 @@ export default function StrategyObservability({ embedded = false, signal = null,
 
     {embedded && <StrategyLiveCalculations signal={signal} paper={paper} levels={levels} parameters={data?.strategyParameters ?? []} />}
 
-    <section className="card terminal-section">
-      <div className="section-heading compact"><div><p className="eyebrow">Market Watch · research only</p><h2>Strategy discovery recorder</h2></div><span className="status-badge good">OBSERVE · LABEL · STUDY</span></div>
+    {!embedded && <section className="card terminal-section">
+      <div className="section-heading compact"><div><p className="eyebrow">Market Watch · research only</p><h2>Strategy discovery recorder</h2></div><a className="secondary" href="/market-watch">Open Market Watch →</a></div>
       <p className="muted threshold-intro">This layer never places an order. It records cash participation, whole-NIFTY volume, futures price/volume/OI/basis, option volume/OI/IV positioning, VWAP and the current decision state, then retrospectively labels what NIFTY did 1/3/5/10/15 minutes later. Those future labels are research outcomes only and are never fed into LIVE decisions.</p>
       <section className="market-secondary-grid" aria-label="Market watch recorder status">
         <div><span>Recent observations</span><strong>{watch.length}</strong><small>Latest 12-hour API window</small></div>
@@ -73,7 +73,7 @@ export default function StrategyObservability({ embedded = false, signal = null,
       <div className="section-heading compact"><div><p className="eyebrow">Recent labeled events</p><h3>Big-move research windows</h3></div><span>Retrospective outcomes</span></div>
       {bigMoves.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>Observed</th><th>NIFTY</th><th>1m</th><th>5m</th><th>15m</th><th>Cash</th><th>Futures</th><th>Options</th><th>Volume</th></tr></thead><tbody>{bigMoves.slice(0, 8).map((row) => <tr key={row.observed_at}><td>{new Date(row.observed_at).toLocaleTimeString("en-IN")}</td><td className="numeric">{number(row.nifty_ltp, 2)}</td><td className={`numeric ${(row.nifty_move_1m_bps ?? 0) >= 0 ? "good" : "bad"}`}>{signed(row.nifty_move_1m_bps, " bps")}</td><td className={`numeric ${(row.nifty_move_5m_bps ?? 0) >= 0 ? "good" : "bad"}`}>{signed(row.nifty_move_5m_bps, " bps")}</td><td className={`numeric ${(row.nifty_move_15m_bps ?? 0) >= 0 ? "good" : "bad"}`}>{signed(row.nifty_move_15m_bps, " bps")}</td><td className="numeric">{signed(row.cash_pressure)}</td><td className="numeric">{signed(row.futures_score)}</td><td className="numeric">{signed(row.option_score)}</td><td className="numeric">{number(row.constituent_volume_delta, 0)}</td></tr>)}</tbody></table></div> : <p className="muted">No observation in the loaded window has crossed the current research-only big-move thresholds yet.</p>}
       <p className="availability-note">The raw snapshot history remains the source of truth. A weekday GitHub Actions artifact exports the flattened log as JSONL so market-move conditions can be inspected later without putting high-frequency data in Git history.</p>
-    </section>
+    </section>}
 
     <section className="card terminal-section strategy-volume-card">
       <div className="section-heading compact"><div><p className="eyebrow">Cross-market context</p><h2>Volume behind the decision</h2></div><span>{paper.running ? "Collecting" : "Waiting"} · 1-minute buckets</span></div>
