@@ -6,6 +6,10 @@ export type VolumeLikePoint = {
   constituent_turnover: number;
 };
 
+export type TimedPoint = {
+  observed_at: string;
+};
+
 export type ThresholdOperator = ">=" | "<=";
 export type ThresholdState = "pass" | "near" | "fail" | "unavailable";
 
@@ -25,6 +29,20 @@ export function classifyMinuteDirection(current: number, previous?: number | nul
   if (current > previous) return "up";
   if (current < previous) return "down";
   return "flat";
+}
+
+export function latestContinuousRun<T extends TimedPoint>(points: T[], maxGapMs = 90_000): T[] {
+  const chronological = points
+    .map((point, index) => ({ point, index, time: Date.parse(point.observed_at) }))
+    .filter((item) => Number.isFinite(item.time))
+    .sort((left, right) => left.time - right.time || left.index - right.index);
+  if (chronological.length === 0) return [];
+
+  let runStart = 0;
+  for (let index = 1; index < chronological.length; index += 1) {
+    if (chronological[index].time - chronological[index - 1].time > maxGapMs) runStart = index;
+  }
+  return chronological.slice(runStart).map((item) => item.point);
 }
 
 export function summarizeVolumeSession(points: VolumeLikePoint[]) {

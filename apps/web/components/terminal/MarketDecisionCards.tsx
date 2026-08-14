@@ -1,4 +1,4 @@
-import { formatIndianVolume, summarizeVolumeSession } from "@/lib/marketCalculations";
+import { formatIndianVolume, latestContinuousRun, summarizeVolumeSession } from "@/lib/marketCalculations";
 import type { NiftyVolumePoint } from "@/lib/researchTypes";
 import { formatNumber, formatPercent } from "@/lib/format";
 import type { ControlStatus } from "@/lib/terminalTypes";
@@ -13,9 +13,10 @@ function biasFromScore(score?: number) {
 export function MarketDecisionCards({ status, points }: { status: ControlStatus | null; points: NiftyVolumePoint[] }) {
   const paper = status?.paperEngine ?? {};
   const latestSignal = status?.latestSignal?.payload ?? null;
-  const volume = summarizeVolumeSession(points);
-  const first = points[0];
-  const latest = points.at(-1);
+  const currentRun = latestContinuousRun(points);
+  const volume = summarizeVolumeSession(currentRun);
+  const first = currentRun[0];
+  const latest = currentRun.at(-1);
   const move = latest && first ? latest.nifty_ltp - first.nifty_ltp : null;
   const movePercent = move !== null && first.nifty_ltp ? move / first.nifty_ltp : null;
   const vwapDistance = typeof paper.nifty_ltp === "number" && typeof paper.synthetic_vwap === "number" && paper.synthetic_vwap > 0
@@ -42,7 +43,7 @@ export function MarketDecisionCards({ status, points }: { status: ControlStatus 
     <article className="market-decision-card volume">
       <div className="market-decision-head"><span>Current 1-min volume</span><span className="market-card-tag">50 stocks</span></div>
       <strong>{volume.current === null ? "—" : formatIndianVolume(volume.current)}</strong>
-      <div className="market-decision-change"><span>{volume.relative === null ? "—" : `${volume.relative.toFixed(2)}x`}</span><span>session average</span></div>
+      <div className="market-decision-change"><span>{volume.relative === null ? "—" : `${volume.relative.toFixed(2)}x`}</span><span>current run average</span></div>
       <small>{activity} · aggregate constituent shares</small>
     </article>
 
