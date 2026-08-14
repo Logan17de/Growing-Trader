@@ -17,6 +17,7 @@ export const terminalNavigation: TerminalNavItem[] = [
   { route: "positions", label: "Positions", shortLabel: "Positions", href: "/positions", icon: "positions", group: "Operate" },
   { route: "orders", label: "Orders", shortLabel: "Orders", href: "/orders", icon: "orders", group: "Operate" },
   { route: "analytics", label: "Analytics", shortLabel: "Analytics", href: "/analytics", icon: "analytics", group: "Evaluate" },
+  { route: "marketWatch", label: "Market Watch", shortLabel: "Watch", href: "/market-watch", icon: "activity", group: "Evaluate" },
   { route: "replay", label: "Backtest / Replay", shortLabel: "Replay", href: "/replay", icon: "replay", group: "Evaluate" },
   { route: "risk", label: "Risk Management", shortLabel: "Risk", href: "/risk", icon: "shield", group: "Evaluate" },
   { route: "activity", label: "Alerts & Logs", shortLabel: "Activity", href: "/activity", icon: "bell", group: "System" },
