@@ -1,4 +1,4 @@
-import type { MarketWatchObservation } from "@/lib/researchTypes";
+import type { MarketWatchObservation } from "./researchTypes";
 
 export type MarketWatchWindow = "today" | "week" | "month" | "all";
 export type OutcomeSide = "bullish" | "bearish";
@@ -81,7 +81,7 @@ export function rankFeatureSeparations(rows: MarketWatchObservation[], horizon: 
     const down = bearish.features[key];
     const separation = up == null || down == null ? null : up - down;
     return { key, label, bullish: up, bearish: down, separation };
-  }).sort((a, b) => Math.abs(b.separation ?? -Infinity) - Math.abs(a.separation ?? -Infinity));
+  }).sort((a, b) => Math.abs(b.separation ?? 0) - Math.abs(a.separation ?? 0));
 }
 
 export function summarizeMarketWatch(rows: MarketWatchObservation[]) {
