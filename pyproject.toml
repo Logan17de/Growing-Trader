@@ -22,6 +22,9 @@ dev = [
   "ruff>=0.9,<1",
   "mypy>=1.14,<2",
 ]
+report = [
+  "pillow>=10.4,<12",
+]
 
 [project.scripts]
 nifty-engine = "nifty_engine.cli:main"

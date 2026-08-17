@@ -1,0 +1,196 @@
+name: Daily Trading Email Report
+
+on:
+  schedule:
+    - cron: "35 15 * * 1-5"
+      timezone: "Asia/Kolkata"
+  workflow_dispatch:
+    inputs:
+      session_date:
+        description: "IST session date to report (YYYY-MM-DD); blank uses today"
+        required: false
+        type: string
+      send_email:
+        description: "Send the email after generating the report"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  PGCONNECT_TIMEOUT: "15"
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install report dependencies
+        run: python -m pip install --disable-pip-version-check -e '.[report]'
+
+      - name: Verify PostgreSQL client
+        run: |
+          set -euo pipefail
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+          psql --version
+
+      - name: Resolve session date
+        id: session
+        env:
+          REQUESTED_DATE: ${{ inputs.session_date }}
+        run: |
+          set -euo pipefail
+          if [ -n "${REQUESTED_DATE:-}" ]; then
+            date -d "$REQUESTED_DATE" +%F >/dev/null
+            session_date="$REQUESTED_DATE"
+          else
+            session_date="$(TZ=Asia/Kolkata date +%F)"
+          fi
+          echo "date=$session_date" >> "$GITHUB_OUTPUT"
+
+      - name: Export report inputs from Supabase
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SESSION_DATE: ${{ steps.session.outputs.date }}
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_DB_URL"
+          mkdir -p report-input
+
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -v session_date="$SESSION_DATE" -At > report-input/trades.jsonl <<'SQL'
+          select row_to_json(row_data)::text
+          from (
+            select
+              t.id::text as trade_id,
+              t.order_id::text as order_id,
+              t.executed_at,
+              coalesce(nullif(t.raw->>'mode',''), o.mode, 'paper') as mode,
+              coalesce(nullif(o.raw->>'signal_event',''), s.event, 'unknown') as signal_event,
+              case coalesce(nullif(o.raw->>'signal_event',''), s.event, 'unknown')
+                when 'breakout' then 'S/R Breakout'
+                when 'reversal' then 'S/R Reversal'
+                else 'Other / Unattributed'
+              end as strategy,
+              t.trading_symbol,
+              t.quantity,
+              nullif(t.raw->>'entry_price','')::numeric as entry_price,
+              t.fill_price,
+              t.pnl,
+              nullif(t.raw->>'exit_reason','') as exit_reason,
+              coalesce(nullif(t.raw->>'broker_order_id',''), o.broker_order_id) as broker_order_id,
+              coalesce(nullif(t.raw->>'order_reference_id',''), o.order_reference_id) as order_reference_id
+            from public.trades t
+            left join public.orders o on o.id = t.order_id
+            left join public.signals s on s.id = o.signal_id
+            where t.executed_at >= ((date_trunc('month', :'session_date'::date)::timestamp) at time zone 'Asia/Kolkata')
+              and t.executed_at < (((:'session_date'::date + 1)::timestamp) at time zone 'Asia/Kolkata')
+            order by t.executed_at
+          ) row_data;
+          SQL
+
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -v session_date="$SESSION_DATE" -At > report-input/minute.jsonl <<'SQL'
+          select row_to_json(row_data)::text
+          from (
+            select observed_at, nifty_ltp, synthetic_vwap, constituent_volume_delta,
+                   constituent_turnover, cash_pressure, breadth, participation,
+                   heavyweight_score, futures_score, option_score, vwap_score, combined_score
+            from public.nifty_volume_minute
+            where observed_at >= ((:'session_date'::date::timestamp) at time zone 'Asia/Kolkata')
+              and observed_at < (((:'session_date'::date + 1)::timestamp) at time zone 'Asia/Kolkata')
+            order by observed_at
+          ) row_data;
+          SQL
+
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -v session_date="$SESSION_DATE" -At > report-input/watch.jsonl <<'SQL'
+          select row_to_json(row_data)::text
+          from (
+            select * from public.market_watch_labeled
+            where session_date = :'session_date'::date
+            order by observed_at
+          ) row_data;
+          SQL
+
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -v session_date="$SESSION_DATE" -At > report-input/metadata.json <<'SQL'
+          select json_build_object(
+            'execution', coalesce((select row_to_json(x) from (
+              select mode, live_armed, max_order_premium, product, order_type, updated_at
+              from public.execution_control_state where id = true
+            ) x), '{}'::json),
+            'paper_account_equity', (select (value #>> '{}')::numeric from public.app_settings where key = 'paper_account_equity'),
+            'unresolved_live_orders', (select count(*) from public.orders where mode = 'live' and status in ('OPEN','SUBMITTING')),
+            'risk', coalesce((select row_to_json(x) from (
+              select kill_switch, block_new_entries, reason, updated_at from public.risk_control_state where id = true
+            ) x), '{}'::json),
+            'engine', coalesce((select payload from public.paper_engine_status order by updated_at desc limit 1), '{}'::jsonb),
+            'worker', coalesce((select row_to_json(x) from (
+              select state, groww_authenticated, market_data_status, last_error, last_heartbeat, updated_at
+              from public.engine_status order by updated_at desc limit 1
+            ) x), '{}'::json),
+            'broker_audit', coalesce((select result from public.engine_commands
+              where command = 'CHECK_LIVE_POSITIONS'
+                and status = 'completed'
+                and created_at >= ((:'session_date'::date::timestamp) at time zone 'Asia/Kolkata')
+                and created_at < (((:'session_date'::date + 1)::timestamp) at time zone 'Asia/Kolkata')
+              order by completed_at desc nulls last, created_at desc limit 1), '{}'::jsonb),
+            'lifecycle', coalesce((select json_build_object(
+              'last_command', command, 'status', status, 'result', result, 'error', error,
+              'created_at', created_at, 'completed_at', completed_at
+            ) from public.engine_commands
+              where command in ('STOP_ENGINE','KILL_SWITCH')
+                and created_at >= ((:'session_date'::date::timestamp) at time zone 'Asia/Kolkata')
+                and created_at < (((:'session_date'::date + 1)::timestamp) at time zone 'Asia/Kolkata')
+              order by created_at desc limit 1), '{}'::json)
+          )::text;
+          SQL
+
+          echo "### Daily report input" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Session: $SESSION_DATE" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Month trade rows: $(wc -l < report-input/trades.jsonl)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Minute market rows: $(wc -l < report-input/minute.jsonl)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Market Watch rows: $(wc -l < report-input/watch.jsonl)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate and optionally send report
+        env:
+          SESSION_DATE: ${{ steps.session.outputs.date }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          TRADING_REPORT_TO: ${{ secrets.TRADING_REPORT_TO }}
+          TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
+          TRADING_REPORT_NAME: ${{ vars.TRADING_REPORT_NAME || 'Logan' }}
+          MANUAL_SEND: ${{ inputs.send_email }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          send=true
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "${MANUAL_SEND:-true}" != "true" ]; then
+            send=false
+          fi
+          if [ -z "${RESEND_API_KEY:-}" ] || [ -z "${TRADING_REPORT_TO:-}" ] || [ -z "${TRADING_REPORT_FROM:-}" ]; then
+            send=false
+            echo "Email secrets are incomplete; report will be generated and archived without delivery." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          args=(--session-date "$SESSION_DATE" --input-dir report-input --output-dir daily-report)
+          if [ "$send" = true ]; then args+=(--send); fi
+          python scripts/generate_daily_report.py "${args[@]}"
+          echo "- Email delivery requested: $send" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-trading-report-${{ steps.session.outputs.date }}
+          path: daily-report/
+          retention-days: 90
+          if-no-files-found: warn
