@@ -71,20 +71,39 @@ async function fetchReport() {
   if (!response.ok) throw new Error(body.error ?? "Could not build current status snapshot"); return body as CurrentStatusReport;
 }
 function download(data: string | Blob, filename: string) { const href = typeof data === "string" ? data : URL.createObjectURL(data); const anchor = document.createElement("a"); anchor.href = href; anchor.download = filename; document.body.appendChild(anchor); anchor.click(); anchor.remove(); if (typeof data !== "string") URL.revokeObjectURL(href); }
+function blobDataUrl(blob: Blob) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error ?? new Error("Could not encode PDF")); reader.readAsDataURL(blob); }); }
 
 export function ReportExportMenu() {
-  const [open, setOpen] = useState(false); const [report, setReport] = useState<CurrentStatusReport | null>(null); const [busy, setBusy] = useState<"image" | "mail" | "json" | null>(null); const [message, setMessage] = useState<string | null>(null); const nodeRef = useRef<HTMLDivElement>(null); const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false); const [report, setReport] = useState<CurrentStatusReport | null>(null); const [busy, setBusy] = useState<"pdf" | "mail" | "json" | null>(null); const [message, setMessage] = useState<string | null>(null); const nodeRef = useRef<HTMLDivElement>(null); const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => { const close = (event: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(event.target as Node)) setOpen(false); }; document.addEventListener("mousedown", close); return () => document.removeEventListener("mousedown", close); }, []);
   async function ensureReport() { const latest = await fetchReport(); setReport(latest); await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); return latest; }
-  async function renderPng() { const latest = await ensureReport(); if (!nodeRef.current) throw new Error("Export canvas is not ready"); const { toPng } = await import("html-to-image"); const image = await toPng(nodeRef.current, { pixelRatio: 1.5, cacheBust: true, backgroundColor: "#f4f7fb" }); return { latest, image }; }
-  async function action(kind: "image" | "mail" | "json") {
+  async function renderPdf() {
+    const latest = await ensureReport();
+    if (!nodeRef.current) throw new Error("Export canvas is not ready");
+    const [{ toPng }, { PDFDocument }] = await Promise.all([import("html-to-image"), import("pdf-lib")]);
+    const image = await toPng(nodeRef.current, { pixelRatio: 1.5, cacheBust: true, backgroundColor: "#f4f7fb" });
+    const pngBytes = new Uint8Array(await (await fetch(image)).arrayBuffer());
+    const document = await PDFDocument.create();
+    const embedded = await document.embedPng(pngBytes);
+    const scale = 0.75;
+    const width = embedded.width * scale;
+    const height = embedded.height * scale;
+    const page = document.addPage([width, height]);
+    page.drawImage(embedded, { x: 0, y: 0, width, height });
+    const pdfBytes = await document.save();
+    const buffer = pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength) as ArrayBuffer;
+    return { latest, pdf: new Blob([buffer], { type: "application/pdf" }) };
+  }
+  async function action(kind: "pdf" | "mail" | "json") {
     setBusy(kind); setMessage(null); setOpen(false);
     try {
       if (kind === "json") { const latest = await ensureReport(); download(new Blob([JSON.stringify(latest, null, 2)], { type: "application/json" }), `growing-trader-status-${latest.sessionDate}.json`); setMessage("JSON exported"); return; }
-      const { latest, image } = await renderPng();
-      if (kind === "image") { download(image, `growing-trader-status-${latest.sessionDate}.png`); setMessage("Snapshot image exported"); return; }
-      const response = await fetch("/api/export/mail", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageData: image, requestId: crypto.randomUUID() }) }); const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Email delivery failed"); setMessage("Current status email sent");
+      const { latest, pdf } = await renderPdf();
+      if (kind === "pdf") { download(pdf, `growing-trader-status-${latest.sessionDate}.pdf`); setMessage("Snapshot PDF exported"); return; }
+      const pdfData = await blobDataUrl(pdf);
+      const response = await fetch("/api/export/mail", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pdfData, requestId: crypto.randomUUID() }) });
+      const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Email delivery failed"); setMessage("Current status PDF sent by mail");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Export failed"); } finally { setBusy(null); }
   }
-  return <><div ref={menuRef} style={{ position: "relative" }}><button className="ghost" type="button" onClick={() => setOpen((value) => !value)} disabled={busy !== null}><Icon name="chart" />{busy ? "Exporting…" : "Export"}<span aria-hidden="true">▾</span></button>{open && <div role="menu" style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", zIndex: 60, width: 238, padding: 7, border: "1px solid var(--border)", borderRadius: 12, background: "#151a1f", boxShadow: "0 18px 48px rgba(0,0,0,.45)" }}><button type="button" role="menuitem" className="export-menu-item" onClick={() => void action("image")}><span>↓</span><div><strong>Export as image</strong><small>PNG · same current report</small></div></button><button type="button" role="menuitem" className="export-menu-item" onClick={() => void action("mail")}><span>✉</span><div><strong>Send by mail</strong><small>Current status · Resend</small></div></button><button type="button" role="menuitem" className="export-menu-item" onClick={() => void action("json")}><span>{`{}`}</span><div><strong>Export JSON</strong><small>Machine-readable snapshot</small></div></button></div>}</div>{message && <span style={{ maxWidth: 280, color: /failed|needs|error|too large/i.test(message) ? "var(--red)" : "var(--green)", fontSize: ".68rem" }}>{message}</span>}<div aria-hidden="true" style={{ position: "fixed", left: -12000, top: 0, zIndex: -1, pointerEvents: "none" }}>{report && <ExportReportCard report={report} nodeRef={nodeRef} />}</div></>;
+  return <><div ref={menuRef} style={{ position: "relative" }}><button className="ghost" type="button" onClick={() => setOpen((value) => !value)} disabled={busy !== null}><Icon name="chart" />{busy ? "Exporting…" : "Export"}<span aria-hidden="true">▾</span></button>{open && <div role="menu" style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", zIndex: 60, width: 238, padding: 7, border: "1px solid var(--border)", borderRadius: 12, background: "#151a1f", boxShadow: "0 18px 48px rgba(0,0,0,.45)" }}><button type="button" role="menuitem" className="export-menu-item" onClick={() => void action("pdf")}><span>↓</span><div><strong>Export PDF</strong><small>PDF · same current report</small></div></button><button type="button" role="menuitem" className="export-menu-item" onClick={() => void action("mail")}><span>✉</span><div><strong>Send by mail</strong><small>PDF snapshot · Resend</small></div></button><button type="button" role="menuitem" className="export-menu-item" onClick={() => void action("json")}><span>{`{}`}</span><div><strong>Export JSON</strong><small>Machine-readable snapshot</small></div></button></div>}</div>{message && <span style={{ maxWidth: 280, color: /failed|needs|error|too large/i.test(message) ? "var(--red)" : "var(--green)", fontSize: ".68rem" }}>{message}</span>}<div aria-hidden="true" style={{ position: "fixed", left: -12000, top: 0, zIndex: -1, pointerEvents: "none" }}>{report && <ExportReportCard report={report} nodeRef={nodeRef} />}</div></>;
 }
