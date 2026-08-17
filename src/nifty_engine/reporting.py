@@ -87,7 +87,7 @@ def calculate_trade_metrics(rows: Iterable[dict[str, Any]]) -> TradeMetrics:
         win_rate=(len(wins) / count) if count else None,
         average_win=(gross_profit / len(wins)) if wins else None,
         average_loss=(gross_loss / len(losses)) if losses else None,
-        profit_factor=(gross_profit / abs(gross_loss)) if gross_loss < 0 else (math.inf if gross_profit > 0 else None),
+        profit_factor=(gross_profit / abs(gross_loss)) if gross_loss < 0 else None,
         expectancy=(sum(pnl) / count) if count else None,
         max_drawdown=max_drawdown,
         best_trade=max(pnl) if pnl else None,
