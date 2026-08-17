@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/terminal/Icon";
+import { MarketWatchDownload } from "@/components/terminal/MarketWatchDownload";
 import { jsonRequest } from "@/lib/controlClient";
 import { formatCompact, formatCurrency, formatNumber, formatPercent } from "@/lib/format";
 import { buildMoveSignature, rankFeatureSeparations, summarizeMarketWatch } from "@/lib/marketWatchAnalytics";
@@ -82,6 +83,8 @@ export function MarketWatchPanel() {
       <div className="segmented-control large" aria-label="Market Watch history window">
         {([[1,"Today"],[7,"7 days"],[30,"30 days"],[90,"90 days"]] as Array<[WindowDays,string]>).map(([value,label]) => <button type="button" key={value} className={days===value?"active":""} aria-pressed={days===value} onClick={()=>setDays(value)}>{label}</button>)}
       </div>
+      <MarketWatchDownload days={days} />
+      <p className="availability-note">Downloads contain the full analysis-ready Market Watch rows for the selected window, including retrospective outcome labels. CSV is convenient for spreadsheets; JSONL preserves nested strategy/signal context for research and model analysis.</p>
       <section className="market-secondary-grid" aria-label="Research dataset coverage">
         <div><span>Observations in DB</span><strong>{data?.observationCount ?? 0}</strong><small>Selected {days}-day window</small></div>
         <div><span>Rows loaded live</span><strong>{coverage.observations}</strong><small>Latest observations for inspection</small></div>
@@ -136,7 +139,7 @@ export function MarketWatchPanel() {
     <section className="card terminal-section">
       <div className="section-heading compact"><div><p className="eyebrow">Labeled evidence</p><h2>Recent big-move windows</h2></div><span>{horizon}-minute outcome selected</span></div>
       {bigMoves.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>Observed</th><th>NIFTY</th><th>{horizon}m outcome</th><th>Max up 15m</th><th>Max down 15m</th><th>Cash</th><th>Breadth</th><th>Heavyweights</th><th>Futures</th><th>Fut OI</th><th>Options</th><th>Opt OI</th><th>Volume</th></tr></thead><tbody>{bigMoves.slice(0,40).map((row)=><tr key={row.observed_at}><td>{new Date(row.observed_at).toLocaleString("en-IN")}</td><td className="numeric">{formatNumber(row.nifty_ltp,2)}</td><td className={`numeric ${tone(outcome(row,horizon))}`}>{signed(outcome(row,horizon)," bps")}</td><td className="numeric good">{signed(row.max_up_15m_bps," bps")}</td><td className="numeric bad">{signed(row.max_down_15m_bps," bps")}</td><td className="numeric">{signed(row.cash_pressure)}</td><td className="numeric">{signed(row.breadth)}</td><td className="numeric">{signed(row.heavyweight_score)}</td><td className="numeric">{signed(row.futures_score)}</td><td className="numeric">{signed(row.futures_oi_change_pct,"%")}</td><td className="numeric">{signed(row.option_score)}</td><td className="numeric">{signed(row.option_oi_change_imbalance)}</td><td className="numeric">{formatCompact(row.constituent_volume_delta)}</td></tr>)}</tbody></table></div> : <p className="muted">No notable moves crossed the current research thresholds in this window.</p>}
-      <p className="availability-note">Machine-readable evidence is exported every weekday at 15:25 IST as JSONL GitHub Actions artifacts for 90 days. The raw Supabase snapshot history remains the source of truth.</p>
+      <p className="availability-note">Machine-readable evidence is also archived every weekday at 15:25 IST as JSONL GitHub Actions artifacts for 90 days. The raw Supabase snapshot history remains the source of truth.</p>
     </section>
 
     <section className="card terminal-section">
