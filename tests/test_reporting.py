@@ -11,12 +11,20 @@ from nifty_engine.reporting import (
 )
 
 
-def trade(when: str, pnl: float, *, mode: str = "paper", strategy: str = "S/R Breakout"):
+def trade(
+    when: str,
+    pnl: float,
+    *,
+    mode: str = "paper",
+    strategy: str = "S/R Breakout",
+    execution_source: str = "algo",
+):
     return {
         "executed_at": when,
         "pnl": pnl,
         "mode": mode,
         "strategy": strategy,
+        "execution_source": execution_source,
         "trading_symbol": "NIFTY-DEMO",
     }
 
@@ -60,6 +68,16 @@ def test_strategy_attribution_is_kept_separate():
     assert grouped["S/R Reversal"].net_pnl == -500
 
 
+def test_manual_source_overrides_strategy_label():
+    rows = [
+        trade("2026-08-17T10:00:00+05:30", 700, mode="live", strategy="S/R Breakout", execution_source="manual"),
+        trade("2026-08-17T10:30:00+05:30", 300, mode="live", strategy="S/R Breakout", execution_source="algo"),
+    ]
+    grouped = strategy_metrics(rows)
+    assert grouped["My Trades"].net_pnl == 700
+    assert grouped["S/R Breakout"].net_pnl == 300
+
+
 def test_market_summary_uses_first_last_and_sums_volume():
     rows = [
         {"observed_at": "2026-08-17T09:15:00+05:30", "nifty_ltp": 24000, "constituent_volume_delta": 10, "constituent_turnover": 100, "breadth": 0.4, "participation": 0.7},
@@ -87,10 +105,11 @@ def test_market_watch_selects_largest_absolute_labeled_move():
     assert result["cash_pressure"] == -0.8
 
 
-def test_report_keeps_paper_live_separate_and_adds_monthly_pnl():
+def test_report_keeps_paper_live_and_manual_algo_separate():
     trades = [
-        trade("2026-08-05T10:00:00+05:30", 2000, mode="live"),
-        trade("2026-08-17T10:00:00+05:30", 1000, mode="live"),
+        trade("2026-08-05T10:00:00+05:30", 2000, mode="live", execution_source="algo"),
+        trade("2026-08-17T10:00:00+05:30", 1000, mode="live", execution_source="algo"),
+        trade("2026-08-17T10:30:00+05:30", -250, mode="live", strategy="My Trades", execution_source="manual"),
         trade("2026-08-17T11:00:00+05:30", 500, mode="paper"),
     ]
     summary = build_report_summary(
@@ -101,8 +120,13 @@ def test_report_keeps_paper_live_separate_and_adds_monthly_pnl():
         metadata={"execution": {"mode": "live", "live_armed": False}, "paper_account_equity": 300000},
     )
     assert summary["primary_mode"] == "live"
-    assert summary["modes"]["live"]["daily"]["net_pnl"] == 1000
-    assert summary["modes"]["live"]["monthly"]["net_pnl"] == 3000
+    assert summary["modes"]["live"]["daily"]["net_pnl"] == 750
+    assert summary["modes"]["live"]["monthly"]["net_pnl"] == 2750
+    assert summary["modes"]["live"]["sources"]["manual"]["daily"]["net_pnl"] == -250
+    assert summary["modes"]["live"]["sources"]["manual"]["monthly"]["net_pnl"] == -250
+    assert summary["modes"]["live"]["sources"]["algo"]["daily"]["net_pnl"] == 1000
+    assert summary["modes"]["live"]["sources"]["algo"]["monthly"]["net_pnl"] == 3000
+    assert summary["modes"]["live"]["strategies"]["My Trades"]["net_pnl"] == -250
     assert summary["modes"]["paper"]["daily"]["net_pnl"] == 500
     assert summary["starting_balance"] is None
     assert summary["ending_balance"] is None
