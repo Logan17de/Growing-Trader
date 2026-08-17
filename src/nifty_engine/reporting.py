@@ -32,7 +32,9 @@ def _local_date(value: Any) -> date | None:
     return parsed.astimezone(IST).date() if parsed else None
 
 
-def _strategy_name(value: Any) -> str:
+def _strategy_name(value: Any, execution_source: Any = None) -> str:
+    if str(execution_source or "").lower() == "manual":
+        return "My Trades"
     text = str(value or "").lower()
     if text == "breakout":
         return "S/R Breakout"
@@ -120,10 +122,18 @@ def rows_for_month(rows: Iterable[dict[str, Any]], session_date: date, mode: str
     return sorted(result, key=lambda row: str(row.get("executed_at") or ""))
 
 
+def rows_for_source(rows: Iterable[dict[str, Any]], source: str) -> list[dict[str, Any]]:
+    expected = source.lower()
+    return [row for row in rows if str(row.get("execution_source") or "algo").lower() == expected]
+
+
 def strategy_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, TradeMetrics]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        strategy = str(row.get("strategy") or _strategy_name(row.get("signal_event")))
+        source = row.get("execution_source")
+        strategy = str(row.get("strategy") or _strategy_name(row.get("signal_event"), source))
+        if str(source or "").lower() == "manual":
+            strategy = "My Trades"
         grouped.setdefault(strategy, []).append(row)
     return {name: calculate_trade_metrics(items) for name, items in sorted(grouped.items())}
 
@@ -223,11 +233,25 @@ def build_report_summary(
     for mode in ("paper", "live"):
         day_rows = rows_for_session(trade_rows, session_date, mode)
         month_rows = rows_for_month(trade_rows, session_date, mode)
+        algo_day = rows_for_source(day_rows, "algo")
+        manual_day = rows_for_source(day_rows, "manual")
+        algo_month = rows_for_source(month_rows, "algo")
+        manual_month = rows_for_source(month_rows, "manual")
         modes[mode] = {
             "daily": calculate_trade_metrics(day_rows).to_dict(),
             "monthly": calculate_trade_metrics(month_rows).to_dict(),
             "strategies": {name: metrics.to_dict() for name, metrics in strategy_metrics(day_rows).items()},
             "daily_rows": day_rows,
+            "sources": {
+                "algo": {
+                    "daily": calculate_trade_metrics(algo_day).to_dict(),
+                    "monthly": calculate_trade_metrics(algo_month).to_dict(),
+                },
+                "manual": {
+                    "daily": calculate_trade_metrics(manual_day).to_dict(),
+                    "monthly": calculate_trade_metrics(manual_month).to_dict(),
+                },
+            },
         }
     market = market_summary(minute_rows)
     watch = largest_market_watch_move(watch_rows)
