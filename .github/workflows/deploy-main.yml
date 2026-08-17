@@ -19,7 +19,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
 
@@ -85,10 +85,40 @@ jobs:
           printf '%s\n' "$ORACLE_SSH_PRIVATE_KEY" > ~/.ssh/oracle
           chmod 600 ~/.ssh/oracle
 
+      - name: Wait for Oracle SSH readiness
+        if: steps.oracle.outputs.state == 'RUNNING' && steps.live.outputs.count == '0'
+        run: |
+          set -euo pipefail
+          ready=false
+          for attempt in $(seq 1 18); do
+            echo "SSH readiness attempt ${attempt}/18"
+            if ssh -i ~/.ssh/oracle \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o ConnectionAttempts=1 \
+              -o StrictHostKeyChecking=accept-new \
+              "$ORACLE_USER@$ORACLE_HOST" 'true'; then
+              ready=true
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ready" != true ]; then
+            echo "Oracle reports RUNNING but SSH did not become ready within the retry window." >&2
+            exit 1
+          fi
+
       - name: Deploy and restart Oracle agent when safe
         if: steps.oracle.outputs.state == 'RUNNING' && steps.live.outputs.count == '0'
         run: |
-          ssh -i ~/.ssh/oracle -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
+          set -euo pipefail
+          ssh -i ~/.ssh/oracle \
+            -o BatchMode=yes \
+            -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            -o StrictHostKeyChecking=accept-new \
+            "$ORACLE_USER@$ORACLE_HOST" \
             'cd /home/ubuntu/Growing-Trader && git fetch origin main && git reset --hard origin/main && sudo bash scripts/install_oracle_service.sh'
 
       - name: Record deferred Oracle deployment
