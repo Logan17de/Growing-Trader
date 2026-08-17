@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { BrandMark, Icon } from "@/components/terminal/Icon";
+import { ReportExportMenu } from "@/components/terminal/ReportExportMenu";
 import { TerminalShell } from "@/components/terminal/TerminalShell";
 import { useTerminalStatus } from "@/hooks/useTerminalStatus";
 import type { ControlStatus, TerminalRoute } from "@/lib/terminalTypes";
@@ -38,6 +39,7 @@ export function AuthenticatedTerminalPage({ activeRoute, eyebrow, title, descrip
         <div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p className="muted">{description}</p></div>
         <div className="hero-actions">
           <span className={`mode-badge ${mode === "live" ? "live" : ""}`}><span className={`status-dot ${modeTone}`} />{modeLabel}</span>
+          <ReportExportMenu />
           <button className="ghost" type="button" onClick={() => void refresh()} disabled={refreshing}><Icon name="refresh" className={refreshing ? "spin" : ""} />Refresh</button>
         </div>
       </section>
