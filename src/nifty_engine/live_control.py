@@ -5,8 +5,11 @@ import logging
 from typing import Any
 
 from .control_plane import OracleControlAgent
-from .execution import GrowwOrderExecutor
+from .execution import GrowwOrderExecutor, make_order_reference
+from .instrument_registry import InstrumentRegistry
+from .paper_runner import _parse_datetime, _returned_row, paper_entry_window_open
 from .replay_service import replay_stored_history
+from .serialization import to_primitive
 from .trading_runner import TradingEngineRuntime, TradingPersistence
 
 logger = logging.getLogger(__name__)
@@ -91,7 +94,6 @@ class LiveOracleControlAgent(OracleControlAgent):
                 mismatches.append(f"unexpected broker position {symbol}: broker={quantity}, DB=0")
 
         if managed is None and broker_positions:
-            # The loop above already records each orphan; this keeps the reason explicit.
             managed_quantity = 0
 
         if mismatches:
@@ -119,6 +121,191 @@ class LiveOracleControlAgent(OracleControlAgent):
             "flat" if result["flat"] else f"{managed_symbol}: {managed_quantity}",
         )
         return result
+
+    def _manual_live_entry(self, payload: dict[str, Any], command_id: str) -> dict[str, Any]:
+        """Place one discretionary LIVE option BUY from the dashboard.
+
+        The browser only supplies a persisted option symbol and number of lots. Oracle
+        revalidates all broker/risk state and uses the same durable reference recovery
+        as algorithmic LIVE entries. The runtime is restarted after the fill so it
+        immediately adopts and monitors the manually opened managed position.
+        """
+        runtime = self.paper_runtime.status()
+        if not bool(runtime.get("running")):
+            raise RuntimeError("manual LIVE entry requires the trading engine to be running")
+        if str(runtime.get("mode") or "") != "live":
+            raise RuntimeError("manual broker entry is only available while the engine is in LIVE mode")
+        if not paper_entry_window_open(datetime.now(timezone.utc), opening_no_entry_minutes=0):
+            raise RuntimeError("manual LIVE entries are limited to the NSE entry window (09:15-15:15 IST)")
+
+        symbol = str(payload.get("trading_symbol") or "").strip().upper()
+        lots = int(payload.get("lots") or 0)
+        if not symbol.startswith("NIFTY") or not symbol.endswith(("CE", "PE")):
+            raise ValueError("manual entry must use a persisted NIFTY CE/PE trading symbol")
+        if lots < 1 or lots > 20:
+            raise ValueError("manual entry lots must be between 1 and 20")
+
+        persistence = TradingPersistence(self.control.client, 1.0)
+        execution = persistence.load_execution_control()
+        if str(execution.get("mode")) != "live" or not bool(execution.get("live_armed")):
+            raise RuntimeError("LIVE execution must be selected and armed before a manual entry")
+        max_order_premium = float(execution.get("max_order_premium") or 0.0)
+        if max_order_premium <= 0:
+            raise RuntimeError("LIVE max order premium must be configured above zero")
+        risk_control = persistence.load_risk_control()
+        if bool(risk_control.get("kill_switch") or risk_control.get("block_new_entries")):
+            raise RuntimeError("manual LIVE entry blocked by the risk/kill-switch state")
+
+        audit = self._audit_live_positions()
+        if not bool(audit.get("flat")):
+            raise RuntimeError("manual LIVE entry blocked because a managed/broker position is already open")
+
+        latest = self.control.client.table("option_chain_series").select(
+            "observed_at,underlying_ltp,expiry,strike,option_type,trading_symbol,ltp,bid_price,ask_price"
+        ).eq("trading_symbol", symbol).order("observed_at", desc=True).limit(1).maybe_single().execute()
+        row = dict(latest.data or {})
+        observed_at = _parse_datetime(row.get("observed_at"))
+        if not row or observed_at is None:
+            raise RuntimeError("selected option is not present in the persisted live option chain")
+        data_age = (datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)).total_seconds()
+        if data_age < 0 or data_age > 60:
+            raise RuntimeError(f"selected option quote is stale ({data_age:.1f}s); refresh market data before entry")
+        ltp = float(row.get("ltp") or 0.0)
+        if ltp <= 0:
+            raise RuntimeError("selected option has no valid LTP")
+
+        groww, _profile = self._groww_client()
+        registry = InstrumentRegistry(groww)
+        lot_size = registry.lot_size_for(symbol, 0)
+        if lot_size <= 0:
+            raise RuntimeError("could not resolve NIFTY option lot size")
+        quantity = lots * lot_size
+        requested_premium = ltp * quantity
+        if requested_premium > max_order_premium + 1e-9:
+            raise RuntimeError(
+                f"manual entry premium {requested_premium:.2f} exceeds configured LIVE cap {max_order_premium:.2f}"
+            )
+        executor = GrowwOrderExecutor(groww, product=str(execution.get("product") or "MIS"))
+        available_margin = executor.available_option_buy_margin()
+        if requested_premium > available_margin + 1e-9:
+            raise RuntimeError(
+                f"manual entry premium {requested_premium:.2f} exceeds Groww option-buy margin {available_margin:.2f}"
+            )
+
+        reference = make_order_reference("MT", command_id)
+        existing = self.control.client.table("orders").select(
+            "id,status,broker_order_id,filled_quantity,average_fill_price,raw,created_at"
+        ).eq("order_reference_id", reference).maybe_single().execute()
+        existing_row = dict(existing.data or {})
+        if existing_row and str(existing_row.get("status")) == "OPEN":
+            return {
+                "ok": True, "manual": True, "recovered": True,
+                "order_id": existing_row.get("id"), "broker_order_id": existing_row.get("broker_order_id"),
+                "order_reference_id": reference, "trading_symbol": symbol,
+                "quantity": int(existing_row.get("filled_quantity") or quantity),
+                "average_fill_price": float(existing_row.get("average_fill_price") or 0.0),
+            }
+
+        runtime_was_running = bool(runtime.get("running"))
+        if runtime_was_running:
+            self.paper_runtime.stop()
+            self._write_paper_status()
+        try:
+            now = datetime.now(timezone.utc)
+            raw = {
+                "mode": "live",
+                "execution_source": "manual",
+                "manual_entry": True,
+                "entry_price": ltp,
+                "entry_nifty": float(row.get("underlying_ltp") or runtime.get("nifty_ltp") or 0.0),
+                "entry_direction": "bullish" if symbol.endswith("CE") else "bearish",
+                "entry_level_name": None,
+                "entry_level_price": None,
+                "best_price": ltp,
+                "original_quantity": quantity,
+                "lot_size": lot_size,
+                "exit_policy": "dynamic_scalp",
+                "requested_price": ltp,
+                "requested_lots": lots,
+                "max_order_premium": max_order_premium,
+                "option_expiry": row.get("expiry"),
+                "strike": row.get("strike"),
+                "option_type": row.get("option_type"),
+            }
+            if existing_row:
+                order_id = str(existing_row["id"])
+                fill = executor.recover_by_reference(reference, quantity)
+                if fill is None:
+                    raise RuntimeError(f"manual LIVE entry {reference} could not be reconciled")
+            else:
+                inserted = self.control.client.table("orders").insert({
+                    "signal_id": None,
+                    "mode": "live",
+                    "execution_source": "manual",
+                    "trading_symbol": symbol,
+                    "side": "BUY",
+                    "quantity": quantity,
+                    "status": "SUBMITTING",
+                    "order_reference_id": reference,
+                    "raw": raw,
+                }).select("id,created_at").execute()
+                order_row = _returned_row(inserted, "manual LIVE order reservation")
+                order_id = str(order_row["id"])
+                fill = executor.submit_market_option(
+                    trading_symbol=symbol,
+                    quantity=quantity,
+                    side="BUY",
+                    order_reference_id=reference,
+                )
+
+            if not fill.filled:
+                if fill.filled_quantity == 0 and fill.status in {"REJECTED", "FAILED", "CANCELLED"}:
+                    self.control.client.table("orders").update({
+                        "status": fill.status,
+                        "broker_order_id": fill.groww_order_id or None,
+                        "filled_quantity": fill.filled_quantity,
+                        "average_fill_price": fill.average_fill_price if fill.average_fill_price > 0 else None,
+                        "raw": raw | {"live_fill": to_primitive(fill)},
+                        "updated_at": now.isoformat(),
+                    }).eq("id", order_id).execute()
+                else:
+                    self.control.client.table("orders").update({
+                        "raw": raw | {"live_fill": to_primitive(fill)},
+                        "updated_at": now.isoformat(),
+                    }).eq("id", order_id).execute()
+                raise RuntimeError(f"manual Groww entry is unresolved/not filled: {fill.status}")
+
+            filled_raw = raw | {
+                "entry_price": fill.average_fill_price,
+                "best_price": fill.average_fill_price,
+                "live_fill": to_primitive(fill),
+            }
+            self.control.client.table("orders").update({
+                "status": "OPEN",
+                "broker_order_id": fill.groww_order_id,
+                "quantity": fill.filled_quantity,
+                "filled_quantity": fill.filled_quantity,
+                "average_fill_price": fill.average_fill_price,
+                "raw": filled_raw,
+                "updated_at": now.isoformat(),
+            }).eq("id", order_id).execute()
+            persistence.write_activity(
+                "critical", "manual-live", "manual_live_entry", "Manual LIVE position opened",
+                f"{fill.filled_quantity} × {symbol} @ {fill.average_fill_price:.2f}",
+                instrument=symbol,
+                metadata={"broker_order_id": fill.groww_order_id, "order_reference_id": reference},
+            )
+            return {
+                "ok": True, "manual": True, "order_id": order_id,
+                "broker_order_id": fill.groww_order_id, "order_reference_id": reference,
+                "trading_symbol": symbol, "lots": lots, "lot_size": lot_size,
+                "quantity": fill.filled_quantity, "average_fill_price": fill.average_fill_price,
+                "requested_premium": requested_premium,
+            }
+        finally:
+            if runtime_was_running:
+                self.paper_runtime.start(self._groww_client)
+                self._write_paper_status()
 
     def _emergency_live_exit(self, fraction: float, reason: str) -> dict[str, Any]:
         groww, _profile = self._groww_client()
@@ -234,6 +421,8 @@ class LiveOracleControlAgent(OracleControlAgent):
                 result = self._set_kill_switch(False, payload)
             elif command_name == "CHECK_LIVE_POSITIONS":
                 result = self._audit_live_positions()
+            elif command_name == "MANUAL_LIVE_ENTRY":
+                result = self._manual_live_entry(payload, command_id)
             elif command_name == "RUN_REPLAY":
                 result = self._run_replay(payload)
             elif command_name == "STOP":

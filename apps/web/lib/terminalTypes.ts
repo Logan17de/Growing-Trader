@@ -50,7 +50,7 @@ export type StrategyLevel = { id: string; name: string; kind: "support" | "resis
 
 export type PaperOrder = {
   id: string; signal_id: string | null; broker_order_id: string | null; order_reference_id?: string | null;
-  mode: "paper" | "live"; trading_symbol: string;
+  mode: "paper" | "live"; execution_source?: "algo" | "manual"; trading_symbol: string;
   side: "BUY" | "SELL"; quantity: number; filled_quantity?: number; average_fill_price?: number | null;
   status: string; created_at: string; entry_price: number | null;
   paper_fill_price?: number | null; paper_slippage?: number | null; entry_nifty: number | null;
@@ -60,7 +60,7 @@ export type PaperOrder = {
 export type PaperTrade = {
   id: string; order_id: string | null; trading_symbol: string; quantity: number; fill_price: number; pnl: number | null;
   executed_at: string; entry_price: number | null; exit_policy: string | null; exit_reason?: string | null; paper_slippage?: number | null;
-  mode?: "paper" | "live"; broker_order_id?: string | null; order_reference_id?: string | null;
+  mode?: "paper" | "live"; execution_source?: "algo" | "manual"; broker_order_id?: string | null; order_reference_id?: string | null;
 };
 
 export type PaperOutcome = { id: string; signal_id: string; order_id: string | null; horizon_seconds: number; observed_at: string; option_ltp: number; nifty_ltp: number; option_return_pct: number | null; underlying_move_points: number | null };
@@ -78,7 +78,8 @@ export type TradingDataSnapshot = Pick<ControlStatus, "recentSignals" | "paperOr
 
 export type ControlCommand =
   | "TEST_AUTH" | "TEST_MARKET_DATA" | "START_PAPER_ENGINE" | "STOP_PAPER_ENGINE" | "START_ENGINE" | "STOP_ENGINE" | "STOP"
-  | "EXIT_PAPER_POSITION" | "UPDATE_PAPER_POSITION" | "KILL_SWITCH" | "RESET_KILL_SWITCH" | "CHECK_LIVE_POSITIONS" | "RUN_REPLAY";
+  | "EXIT_PAPER_POSITION" | "UPDATE_PAPER_POSITION" | "KILL_SWITCH" | "RESET_KILL_SWITCH" | "CHECK_LIVE_POSITIONS" | "RUN_REPLAY"
+  | "MANUAL_LIVE_ENTRY";
 
 export type TerminalRoute = "dashboard" | "market" | "strategies" | "positions" | "orders" | "analytics" | "marketWatch" | "replay" | "risk" | "activity" | "settings";
 

@@ -78,10 +78,12 @@ jobs:
               t.order_id::text as order_id,
               t.executed_at,
               coalesce(nullif(t.raw->>'mode',''), o.mode, 'paper') as mode,
+              coalesce(t.execution_source, o.execution_source, 'algo') as execution_source,
               coalesce(nullif(o.raw->>'signal_event',''), s.event, 'unknown') as signal_event,
-              case coalesce(nullif(o.raw->>'signal_event',''), s.event, 'unknown')
-                when 'breakout' then 'S/R Breakout'
-                when 'reversal' then 'S/R Reversal'
+              case
+                when coalesce(t.execution_source, o.execution_source, 'algo') = 'manual' then 'My Trades'
+                when coalesce(nullif(o.raw->>'signal_event',''), s.event, 'unknown') = 'breakout' then 'S/R Breakout'
+                when coalesce(nullif(o.raw->>'signal_event',''), s.event, 'unknown') = 'reversal' then 'S/R Reversal'
                 else 'Other / Unattributed'
               end as strategy,
               t.trading_symbol,

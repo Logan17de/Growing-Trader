@@ -264,7 +264,7 @@ def _nifty_chart(minute_rows: list[dict[str, Any]], output: Path) -> None:
 
 
 def _write_trade_csv(rows: list[dict[str, Any]], path: Path) -> None:
-    fields = ["executed_at", "mode", "strategy", "trading_symbol", "quantity", "entry_price", "fill_price", "pnl", "exit_reason", "broker_order_id"]
+    fields = ["executed_at", "mode", "execution_source", "strategy", "trading_symbol", "quantity", "entry_price", "fill_price", "pnl", "exit_reason", "broker_order_id"]
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
@@ -288,7 +288,7 @@ def _strategy_table(summary: dict[str, Any]) -> str:
     rows: list[str] = []
     for mode in ("live", "paper"):
         strategies = summary["modes"][mode]["strategies"]
-        for name in ("S/R Breakout", "S/R Reversal", "Other / Unattributed"):
+        for name in ("My Trades", "S/R Breakout", "S/R Reversal", "Other / Unattributed"):
             metrics = strategies.get(name)
             if not metrics or not metrics.get("trades"):
                 continue
@@ -303,8 +303,8 @@ def _strategy_table(summary: dict[str, Any]) -> str:
                 "</tr>"
             )
     if not rows:
-        return f"<div style='color:{MUTED}'>No closed trades to attribute to a strategy today.</div>"
-    header = "<tr style='background:#f6f9fc;color:#667085;font-size:11px;text-transform:uppercase'><th style='padding:10px;text-align:left'>Strategy</th><th style='padding:10px;text-align:right'>Trades</th><th style='padding:10px;text-align:right'>Win rate</th><th style='padding:10px;text-align:right'>Net P&L</th><th style='padding:10px;text-align:right'>Expectancy</th></tr>"
+        return f"<div style='color:{MUTED}'>No closed trades to attribute today.</div>"
+    header = "<tr style='background:#f6f9fc;color:#667085;font-size:11px;text-transform:uppercase'><th style='padding:10px;text-align:left'>Source / Strategy</th><th style='padding:10px;text-align:right'>Trades</th><th style='padding:10px;text-align:right'>Win rate</th><th style='padding:10px;text-align:right'>Net P&L</th><th style='padding:10px;text-align:right'>Expectancy</th></tr>"
     return f"<table role='presentation' style='width:100%;border-collapse:collapse;font-size:13px'>{header}{''.join(rows)}</table>"
 
 
@@ -322,6 +322,24 @@ def _mode_comparison(summary: dict[str, Any]) -> str:
             f"<td style='padding:9px 12px;border-bottom:1px solid #edf1f6;text-align:right'>{money(monthly.get('net_pnl'),signed=True)}</td></tr>"
         )
     return "<table role='presentation' style='width:100%;border-collapse:collapse;font-size:13px'><tr style='background:#f6f9fc;color:#667085;font-size:11px;text-transform:uppercase'><th style='padding:9px 12px;text-align:left'>Mode</th><th style='padding:9px 12px;text-align:right'>Trades</th><th style='padding:9px 12px;text-align:right'>Win rate</th><th style='padding:9px 12px;text-align:right'>Today</th><th style='padding:9px 12px;text-align:right'>Month</th></tr>" + "".join(rows) + "</table>"
+
+
+def _live_source_comparison(summary: dict[str, Any]) -> str:
+    sources = summary.get("modes", {}).get("live", {}).get("sources", {})
+    rows: list[str] = []
+    for source, label in (("manual", "My Trades"), ("algo", "Algo LIVE")):
+        source_metrics = sources.get(source, {}) if isinstance(sources, dict) else {}
+        daily = source_metrics.get("daily", {}) if isinstance(source_metrics, dict) else {}
+        monthly = source_metrics.get("monthly", {}) if isinstance(source_metrics, dict) else {}
+        pnl = float(daily.get("net_pnl") or 0.0)
+        rows.append(
+            f"<tr><td style='padding:9px 12px;border-bottom:1px solid #edf1f6;font-weight:700'>{escape(label)}</td>"
+            f"<td style='padding:9px 12px;border-bottom:1px solid #edf1f6;text-align:right'>{daily.get('trades',0)}</td>"
+            f"<td style='padding:9px 12px;border-bottom:1px solid #edf1f6;text-align:right'>{percent(daily.get('win_rate'))}</td>"
+            f"<td style='padding:9px 12px;border-bottom:1px solid #edf1f6;text-align:right;color:{GREEN if pnl>=0 else RED};font-weight:800'>{money(pnl,signed=True)}</td>"
+            f"<td style='padding:9px 12px;border-bottom:1px solid #edf1f6;text-align:right'>{money(monthly.get('net_pnl'),signed=True)}</td></tr>"
+        )
+    return "<table role='presentation' style='width:100%;border-collapse:collapse;font-size:13px'><tr style='background:#f6f9fc;color:#667085;font-size:11px;text-transform:uppercase'><th style='padding:9px 12px;text-align:left'>LIVE source</th><th style='padding:9px 12px;text-align:right'>Trades</th><th style='padding:9px 12px;text-align:right'>Win rate</th><th style='padding:9px 12px;text-align:right'>Today</th><th style='padding:9px 12px;text-align:right'>Month</th></tr>" + "".join(rows) + "</table><div style='margin-top:8px;color:#667085;font-size:11px'>LIVE total = My Trades + Algo LIVE. PAPER is simulation only and is never combined into real-money P&amp;L.</div>"
 
 
 def build_html(summary: dict[str, Any], recipient_name: str) -> str:
@@ -375,7 +393,7 @@ def build_html(summary: dict[str, Any], recipient_name: str) -> str:
         <td style="text-align:right;color:{INK};font-size:13px">{datetime.now(IST).strftime('%I:%M %p')} (IST)<br>{datetime.fromisoformat(summary['session_date']).strftime('%d %b %Y')}</td>
       </tr></table>
       <h1 style="font-size:24px;margin:24px 0 8px;color:{INK}">Your Trading Summary — {datetime.fromisoformat(summary['session_date']).strftime('%d %b %Y')}</h1>
-      <p style="font-size:14px;margin:0 0 18px;color:#34445c">Hi {escape(recipient_name)},<br>Here is your daily trading summary, strategy performance, market overview, and Market Watch research snapshot.</p>
+      <p style="font-size:14px;margin:0 0 18px;color:#34445c">Hi {escape(recipient_name)},<br>Here is your daily trading summary, your discretionary performance, algo strategy performance, market overview, and Market Watch research snapshot.</p>
 
       <div style="border-radius:14px;overflow:hidden;background:{NAVY};margin-bottom:18px"><div style="padding:14px 16px 0;color:white;font-size:13px;font-weight:800">TODAY'S SUMMARY · {escape(mode)}</div><div style="overflow-x:auto"><table role="presentation" style="width:100%;border-collapse:collapse;margin-top:4px"><tr>{summary_cells}</tr></table></div></div>
 
@@ -384,7 +402,8 @@ def build_html(summary: dict[str, Any], recipient_name: str) -> str:
       <table role="presentation" style="width:100%;border-collapse:collapse"><tr><td style="width:55%;vertical-align:top;padding-right:8px">{_card('EQUITY / REALIZED CURVE', '<img src="cid:equity-chart" alt="Equity curve" style="width:100%;height:auto;display:block">')}</td><td style="width:45%;vertical-align:top;padding-left:8px">{_card('PERFORMANCE SNAPSHOT', '<img src="cid:performance-chart" alt="Performance snapshot" style="width:100%;height:auto;display:block">')}</td></tr></table>
 
       {_card('PAPER / LIVE PERFORMANCE', _mode_comparison(summary))}
-      {_card('STRATEGY PERFORMANCE', _strategy_table(summary))}
+      {_card('MY TRADES vs ALGO LIVE', _live_source_comparison(summary))}
+      {_card('SOURCE / STRATEGY PERFORMANCE', _strategy_table(summary))}
 
       {_card('MARKET OVERVIEW', f'<img src="cid:nifty-chart" alt="NIFTY intraday chart" style="width:100%;height:auto;display:block"><table role="presentation" style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px"><tr><td style="padding:8px"><strong>NIFTY close</strong><br><span style="font-size:22px;font-weight:800">{market.get("close") or "—"}</span><br><span style="color:{market_color};font-weight:700">{signed(market.get("change_points")," pts")} ({percent(market.get("change_pct"))})</span></td><td style="padding:8px"><strong>50-stock volume</strong><br><span style="font-size:18px;font-weight:800">{compact_india(market.get("volume"))} shares</span><br><span style="color:{MUTED}">Constituent-derived</span></td><td style="padding:8px"><strong>Turnover</strong><br><span style="font-size:18px;font-weight:800">{money(market.get("turnover"))}</span></td><td style="padding:8px"><strong>Breadth / Participation</strong><br><span style="font-size:18px;font-weight:800">{percent(market.get("breadth"))} / {percent(market.get("participation"))}</span></td></tr><tr><td style="padding:8px"><strong>Synthetic VWAP</strong><br>{market.get("synthetic_vwap") or "—"}</td><td style="padding:8px"><strong>Cash pressure</strong><br>{signed(market.get("cash_pressure"))}</td><td style="padding:8px"><strong>Futures score</strong><br>{signed(market.get("futures_score"))}</td><td style="padding:8px"><strong>Options / Combined</strong><br>{signed(market.get("option_score"))} / {signed(market.get("combined_score"))}</td></tr></table>')}
 
@@ -393,7 +412,7 @@ def build_html(summary: dict[str, Any], recipient_name: str) -> str:
       {_card('BROKER & SYSTEM SAFETY', f'<table role="presentation" style="width:100%;border-collapse:collapse;font-size:13px"><tr><td style="padding:9px;color:{MUTED}">Groww NIFTY F&O positions</td><td style="padding:9px;text-align:right;color:{broker_color};font-weight:800">{escape(broker_text)}</td></tr><tr><td style="padding:9px;color:{MUTED}">Unresolved LIVE orders</td><td style="padding:9px;text-align:right;font-weight:800">{safety.get("unresolved_live_orders",0)}</td></tr><tr><td style="padding:9px;color:{MUTED}">LIVE armed</td><td style="padding:9px;text-align:right;font-weight:800">{"YES" if safety.get("live_armed") else "No"}</td></tr><tr><td style="padding:9px;color:{MUTED}">Kill switch</td><td style="padding:9px;text-align:right;font-weight:800">{"ACTIVE" if safety.get("kill_switch") else "Clear"}</td></tr><tr><td style="padding:9px;color:{MUTED}">Last engine state</td><td style="padding:9px;text-align:right;font-weight:800">{escape(str(safety.get("engine_state") or "—"))}</td></tr></table>')}
 
       <div style="border-radius:12px;background:#eef6ff;padding:15px 18px;margin-top:12px"><strong style="color:{BLUE}">DAY RESULT</strong><div style="margin-top:6px;font-size:13px">{escape(mode)} day P&L: <strong style="color:{day_color}">{money(day_pnl,signed=True)}</strong> · Monthly P&L: <strong style="color:{month_color}">{money(month_pnl,signed=True)}</strong> · Broker audit: <strong style="color:{broker_color}">{escape(broker_text)}</strong></div></div>
-      <p style="text-align:center;color:#8a98aa;font-size:11px;margin:24px 0 0">This is an automated report from Growing Trader. PAPER and LIVE results are kept separate. NIFTY volume is constituent-derived.</p>
+      <p style="text-align:center;color:#8a98aa;font-size:11px;margin:24px 0 0">This is an automated report from Growing Trader. PAPER watches/analyzes and simulates only. LIVE watches/analyzes and can execute. My Trades and Algo LIVE are attributed separately.</p>
     </div></body></html>"""
     return html
 

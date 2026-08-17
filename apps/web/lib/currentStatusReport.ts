@@ -9,6 +9,7 @@ type TradeRow = {
   quantity: number;
   fill_price: number;
   pnl: number | null;
+  execution_source?: "algo" | "manual";
   raw: Record<string, unknown> | null;
   executed_at: string;
 };
@@ -16,11 +17,12 @@ type TradeRow = {
 type OrderRow = {
   id: string;
   mode: ReportMode;
+  execution_source?: "algo" | "manual";
   raw: Record<string, unknown> | null;
 };
 
 export type StrategyReportRow = {
-  strategy: "S/R Breakout" | "S/R Reversal" | "Other / Unattributed";
+  strategy: "My Trades" | "S/R Breakout" | "S/R Reversal" | "Other / Unattributed";
   trades: number;
   wins: number;
   winRate: number | null;
@@ -49,6 +51,14 @@ export type CurrentStatusReport = {
     expectancy: number | null;
     startingBalance: number | null;
     endingBalance: number | null;
+  };
+  myTrading: {
+    dailyPnl: number;
+    monthlyPnl: number;
+    tradesToday: number;
+    tradesMonth: number;
+    winRateToday: number | null;
+    winRateMonth: number | null;
   };
   strategies: StrategyReportRow[];
   pnlSeries: ReportSeriesPoint[];
@@ -114,7 +124,12 @@ function tradeMode(trade: TradeRow, order: OrderRow | undefined): ReportMode {
   return order?.mode === "live" ? "live" : "paper";
 }
 
+function executionSource(trade: TradeRow, order: OrderRow | undefined) {
+  return trade.execution_source === "manual" || order?.execution_source === "manual" ? "manual" : "algo";
+}
+
 function strategyName(order: OrderRow | undefined): StrategyReportRow["strategy"] {
+  if (order?.execution_source === "manual") return "My Trades";
   const event = String(record(order?.raw).signal_event ?? "").toLowerCase();
   if (event === "breakout") return "S/R Breakout";
   if (event === "reversal") return "S/R Reversal";
@@ -160,8 +175,8 @@ export async function buildCurrentStatusReport(): Promise<CurrentStatusReport> {
 
   const [executionResult, tradeResult, orderResult, minuteResult, watchResult, riskResult, workerResult, engineResult, auditResult, equityResult] = await Promise.all([
     supabase.from("execution_control_state").select("mode,live_armed").eq("id", true).maybeSingle(),
-    supabase.from("trades").select("id,order_id,trading_symbol,quantity,fill_price,pnl,raw,executed_at").gte("executed_at", monthStart).lt("executed_at", dayEnd).order("executed_at"),
-    supabase.from("orders").select("id,mode,raw").gte("created_at", monthStart).lt("created_at", dayEnd).limit(1000),
+    supabase.from("trades").select("id,order_id,trading_symbol,quantity,fill_price,pnl,execution_source,raw,executed_at").gte("executed_at", monthStart).lt("executed_at", dayEnd).order("executed_at"),
+    supabase.from("orders").select("id,mode,execution_source,raw").gte("created_at", monthStart).lt("created_at", dayEnd).limit(1000),
     supabase.from("nifty_volume_minute").select("observed_at,nifty_ltp,synthetic_vwap,constituent_volume_delta,constituent_turnover,cash_pressure,breadth,participation,heavyweight_score,futures_score,option_score,combined_score").gte("observed_at", dayStart).lt("observed_at", dayEnd).order("observed_at"),
     supabase.from("market_watch_labeled").select("*").eq("session_date", sessionDate).order("observed_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("risk_control_state").select("kill_switch").eq("id", true).maybeSingle(),
@@ -182,12 +197,16 @@ export async function buildCurrentStatusReport(): Promise<CurrentStatusReport> {
     const pnl = numberValue(trade.pnl);
     if (pnl === null) return [];
     const order = trade.order_id ? orderById.get(trade.order_id) : undefined;
-    return [{ ...trade, pnl, mode: tradeMode(trade, order), strategy: strategyName(order) }];
+    return [{ ...trade, pnl, mode: tradeMode(trade, order), executionSource: executionSource(trade, order), strategy: strategyName(order) }];
   });
   const monthTrades = allTrades.filter((trade) => trade.mode === mode);
   const dayTrades = monthTrades.filter((trade) => trade.executed_at >= dayStart && trade.executed_at < dayEnd);
   const dailyMetrics = metrics(dayTrades);
   const monthlyMetrics = metrics(monthTrades);
+  const manualMonth = monthTrades.filter((trade) => trade.executionSource === "manual");
+  const manualDay = dayTrades.filter((trade) => trade.executionSource === "manual");
+  const manualDayMetrics = metrics(manualDay);
+  const manualMonthMetrics = metrics(manualMonth);
 
   const strategyGroups = new Map<StrategyReportRow["strategy"], typeof dayTrades>();
   for (const trade of dayTrades) {
@@ -195,7 +214,7 @@ export async function buildCurrentStatusReport(): Promise<CurrentStatusReport> {
     group.push(trade);
     strategyGroups.set(trade.strategy, group);
   }
-  const strategies = (["S/R Breakout", "S/R Reversal", "Other / Unattributed"] as const).map((strategy) => {
+  const strategies = (["My Trades", "S/R Breakout", "S/R Reversal", "Other / Unattributed"] as const).map((strategy) => {
     const rows = strategyGroups.get(strategy) ?? [];
     const result = metrics(rows);
     return { strategy, trades: result.trades, wins: result.wins, winRate: result.winRate, pnl: result.pnl };
@@ -242,6 +261,14 @@ export async function buildCurrentStatusReport(): Promise<CurrentStatusReport> {
       expectancy: dailyMetrics.expectancy,
       startingBalance,
       endingBalance,
+    },
+    myTrading: {
+      dailyPnl: manualDayMetrics.pnl,
+      monthlyPnl: manualMonthMetrics.pnl,
+      tradesToday: manualDayMetrics.trades,
+      tradesMonth: manualMonthMetrics.trades,
+      winRateToday: manualDayMetrics.winRate,
+      winRateMonth: manualMonthMetrics.winRate,
     },
     strategies,
     pnlSeries,

@@ -49,6 +49,18 @@ function StrategyPerformanceCard({
   </article>;
 }
 
+function MyTradingPerformanceCard({ trades }: { trades: PaperTrade[] }) {
+  const today = calculatePerformanceForTimeframe(trades, "today");
+  const week = calculatePerformanceForTimeframe(trades, "week");
+  const month = calculatePerformanceForTimeframe(trades, "month");
+  const all = calculatePerformanceForTimeframe(trades, "all");
+  return <article className="strategy-performance-card">
+    <div><p className="eyebrow">Discretionary · LIVE</p><h3>My Trades</h3></div>
+    <dl className="strategy-periods"><div><dt>Today</dt><dd>{formatCurrency(today.netPnl)}</dd></div><div><dt>Week</dt><dd>{formatCurrency(week.netPnl)}</dd></div><div><dt>Month</dt><dd>{formatCurrency(month.netPnl)}</dd></div><div><dt>All-time</dt><dd>{formatCurrency(all.netPnl)}</dd></div></dl>
+    <div className="strategy-performance-stats"><span>Trades <strong>{all.completedTrades}</strong></span><span>Win rate <strong>{formatPercent(all.winRate)}</strong></span><span>Avg win <strong>{formatCurrency(all.averageWinner)}</strong></span><span>Avg loss <strong>{formatCurrency(all.averageLoser)}</strong></span><span>Profit factor <strong>{all.profitFactor?.toFixed(2) ?? "Unavailable"}</strong></span></div>
+  </article>;
+}
+
 function StrategyTable({
   paperRows,
   liveRows,
@@ -61,11 +73,11 @@ function StrategyTable({
   timeframeLabel: string;
 }) {
   const rows = showModes.flatMap((mode) => (mode === "paper" ? paperRows : liveRows).map((row) => ({ ...row, mode })));
-  return <section className="card terminal-section"><div className="section-heading compact"><div><p className="eyebrow">Persisted attribution</p><h2>Performance by setup and mode</h2></div><span>{timeframeLabel}</span></div>
+  return <section className="card terminal-section"><div className="section-heading compact"><div><p className="eyebrow">Persisted attribution</p><h2>Algo performance by setup and mode</h2></div><span>{timeframeLabel}</span></div>
     <div className="table-scroll"><table className="data-table strategy-performance-table"><thead><tr><th>Strategy</th><th>Mode</th><th>Trades</th><th>Win rate</th><th>Net P&amp;L</th><th>Avg P&amp;L</th><th>Profit factor</th><th>Drawdown</th></tr></thead><tbody>
       {rows.map((row) => <tr key={`${row.strategy}-${row.mode}`}><td><strong>S/R {row.strategy}</strong></td><td><span className={`side-badge ${row.mode}`}>{row.mode.toUpperCase()}</span></td><td className="numeric">{row.metrics.completedTrades}</td><td className="numeric">{formatPercent(row.metrics.winRate)}</td><td className={`numeric ${(row.metrics.netPnl ?? 0) >= 0 ? "good" : "bad"}`}>{formatCurrency(row.metrics.netPnl)}</td><td className="numeric">{formatCurrency(row.metrics.averagePnl)}</td><td className="numeric">{row.metrics.profitFactor?.toFixed(2) ?? "Unavailable"}</td><td className="numeric bad">{formatCurrency(row.metrics.maxDrawdown)}</td></tr>)}
     </tbody></table></div>
-    <p className="availability-note">Strategy attribution follows each persisted order&apos;s signal event. PAPER simulation and LIVE broker fills remain separate datasets.</p>
+    <p className="availability-note">Breakout/Reversal attribution remains algorithm-only. Discretionary app entries are reported separately as My Trades.</p>
   </section>;
 }
 
@@ -125,12 +137,16 @@ export function AnalyticsPanel({ status }: { status: ControlStatus }) {
   const [mode, setMode] = useState<AnalyticsMode>("paper");
   const paperTrades = useMemo(() => filterTradesByMode(status.paperTrades, "paper"), [status.paperTrades]);
   const liveTrades = useMemo(() => filterTradesByMode(status.paperTrades, "live"), [status.paperTrades]);
+  const liveManualTrades = useMemo(() => liveTrades.filter((trade) => trade.execution_source === "manual"), [liveTrades]);
+  const liveAlgoTrades = useMemo(() => liveTrades.filter((trade) => trade.execution_source !== "manual"), [liveTrades]);
   const paperOrders = useMemo(() => ordersForMode(status.paperOrders, "paper"), [status.paperOrders]);
   const liveOrders = useMemo(() => ordersForMode(status.paperOrders, "live"), [status.paperOrders]);
   const paperAttributed = useMemo(() => attributePaperTrades(paperTrades, paperOrders), [paperOrders, paperTrades]);
-  const liveAttributed = useMemo(() => attributePaperTrades(liveTrades, liveOrders), [liveOrders, liveTrades]);
+  const liveAttributed = useMemo(() => attributePaperTrades(liveAlgoTrades, liveOrders.filter((order) => order.execution_source !== "manual")), [liveAlgoTrades, liveOrders]);
   const paperMetrics = useMemo(() => calculatePerformanceForTimeframe(paperTrades, timeframe), [paperTrades, timeframe]);
   const liveMetrics = useMemo(() => calculatePerformanceForTimeframe(liveTrades, timeframe), [liveTrades, timeframe]);
+  const manualMetrics = useMemo(() => calculatePerformanceForTimeframe(liveManualTrades, timeframe), [liveManualTrades, timeframe]);
+  const algoLiveMetrics = useMemo(() => calculatePerformanceForTimeframe(liveAlgoTrades, timeframe), [liveAlgoTrades, timeframe]);
   const paperStrategyRows = useMemo(() => groupStrategyPerformance(paperAttributed, timeframe), [paperAttributed, timeframe]);
   const liveStrategyRows = useMemo(() => groupStrategyPerformance(liveAttributed, timeframe), [liveAttributed, timeframe]);
   const timeframeLabel = timeframe === "all" ? "All time" : timeframe[0].toUpperCase() + timeframe.slice(1);
@@ -141,11 +157,20 @@ export function AnalyticsPanel({ status }: { status: ControlStatus }) {
       <div className="segmented-control large">{(["today", "week", "month", "all"] as AnalyticsTimeframe[]).map((item) => <button type="button" key={item} className={timeframe === item ? "active" : ""} aria-pressed={timeframe === item} onClick={() => setTimeframe(item)}>{item}</button>)}</div>
     </section>
 
+    {(mode === "live" || mode === "combined") && <>
+      <section className="analytics-mode-comparison">
+        <ComparisonCard label={`MY TRADES · ${timeframeLabel}`} metrics={manualMetrics} />
+        <ComparisonCard label={`ALGO LIVE · ${timeframeLabel}`} metrics={algoLiveMetrics} />
+        <p>My Trades are discretionary entries submitted from the app. Algo LIVE contains only engine-generated entries. Together they reconcile to total LIVE performance.</p>
+      </section>
+      <section className="strategy-performance-grid terminal-section"><MyTradingPerformanceCard trades={liveManualTrades} /></section>
+    </>}
+
     {mode === "combined" ? <>
       <section className="analytics-mode-comparison">
         <ComparisonCard label={`PAPER · ${timeframeLabel}`} metrics={paperMetrics} />
-        <ComparisonCard label={`LIVE · ${timeframeLabel}`} metrics={liveMetrics} />
-        <p>Side-by-side only: simulated PAPER results and broker-reconciled LIVE fills are never summed into one P&amp;L number.</p>
+        <ComparisonCard label={`LIVE TOTAL · ${timeframeLabel}`} metrics={liveMetrics} />
+        <p>Side-by-side only: simulated PAPER results are never summed with broker-reconciled LIVE fills. LIVE total includes Algo LIVE + My Trades.</p>
       </section>
       <section className="analytics-chart-grid terminal-section">
         <article className="card"><div className="section-heading compact"><div><p className="eyebrow">PAPER equity</p><h2>Simulated fills</h2></div><span>{paperMetrics.completedTrades} realized</span></div><PerformanceChart trades={filterTradesByTimeframe(paperTrades, timeframe)} /></article>
