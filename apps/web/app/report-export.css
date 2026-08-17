@@ -1,0 +1,7 @@
+.export-menu-item { width: 100%; display: flex; align-items: center; gap: 11px; padding: 10px 11px; border: 0; border-radius: 9px; background: transparent; color: #e7edf1; text-align: left; }
+.export-menu-item:hover { background: rgba(47, 192, 141, .08); }
+.export-menu-item > span { width: 28px; height: 28px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 8px; color: var(--cyan); font-size: .74rem; font-weight: 800; }
+.export-menu-item > div { display: grid; gap: 2px; }
+.export-menu-item strong { font-size: .76rem; font-weight: 700; }
+.export-menu-item small { color: #73808d; font-size: .64rem; }
+@media (max-width: 760px) { .terminal-page-hero .hero-actions { flex-wrap: wrap; } }
