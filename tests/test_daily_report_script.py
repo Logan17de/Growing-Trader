@@ -13,14 +13,19 @@ def test_daily_report_script_renders_artifacts(tmp_path: Path):
     (input_dir / "trades.jsonl").write_text(
         "\n".join([
             json.dumps({
-                "executed_at": "2026-08-17T10:00:00+05:30", "mode": "paper", "strategy": "S/R Breakout",
+                "executed_at": "2026-08-17T10:00:00+05:30", "mode": "paper", "execution_source": "algo", "strategy": "S/R Breakout",
                 "signal_event": "breakout", "trading_symbol": "NIFTY-DEMO-CE", "quantity": 65,
                 "entry_price": 100, "fill_price": 110, "pnl": 650, "exit_reason": "target",
             }),
             json.dumps({
-                "executed_at": "2026-08-17T12:00:00+05:30", "mode": "paper", "strategy": "S/R Reversal",
+                "executed_at": "2026-08-17T12:00:00+05:30", "mode": "paper", "execution_source": "algo", "strategy": "S/R Reversal",
                 "signal_event": "reversal", "trading_symbol": "NIFTY-DEMO-PE", "quantity": 65,
                 "entry_price": 90, "fill_price": 85, "pnl": -325, "exit_reason": "stop",
+            }),
+            json.dumps({
+                "executed_at": "2026-08-17T13:00:00+05:30", "mode": "live", "execution_source": "manual", "strategy": "My Trades",
+                "signal_event": "unknown", "trading_symbol": "NIFTY-DEMO-CE", "quantity": 65,
+                "entry_price": 120, "fill_price": 126, "pnl": 390, "exit_reason": "manual_exit",
             }),
         ]),
         encoding="utf-8",
@@ -63,4 +68,9 @@ def test_daily_report_script_renders_artifacts(tmp_path: Path):
     html = (output_dir / "daily-report-2026-08-17.html").read_text(encoding="utf-8")
     assert "Monthly P&amp;L" in html or "Monthly P&L" in html
     assert "S/R Breakout" in html
+    assert "My Trades" in html
+    assert "MY TRADES vs ALGO LIVE" in html
     assert "MARKET WATCH" in html
+    csv_text = (output_dir / "daily-trades-2026-08-17.csv").read_text(encoding="utf-8")
+    assert "execution_source" in csv_text
+    assert "manual" in csv_text
