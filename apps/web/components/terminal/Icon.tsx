@@ -1,6 +1,6 @@
 export type IconName =
   | "activity" | "analytics" | "arrow-right" | "bell" | "chart" | "check"
-  | "clock" | "dashboard" | "database" | "key" | "layers" | "lock" | "logout"
+  | "clock" | "dashboard" | "database" | "download" | "key" | "layers" | "lock" | "logout"
   | "minus" | "orders" | "plus" | "positions" | "refresh" | "replay" | "server"
   | "settings" | "shield" | "stop" | "strategy" | "terminal" | "trash" | "wifi" | "x";
 
@@ -16,6 +16,7 @@ export function Icon({ name, className = "" }: { name: IconName; className?: str
     case "clock": paths = <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>; break;
     case "dashboard": paths = <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>; break;
     case "database": paths = <><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" /></>; break;
+    case "download": paths = <><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 20h14" /></>; break;
     case "key": paths = <><circle cx="8" cy="15" r="4" /><path d="m11 12 8-8M15 8l2 2M17 6l2 2" /></>; break;
     case "layers": paths = <><path d="m12 3-9 5 9 5 9-5-9-5Z" /><path d="m3 12 9 5 9-5M3 16l9 5 9-5" /></>; break;
     case "lock": paths = <><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>; break;
