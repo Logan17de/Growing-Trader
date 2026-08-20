@@ -19,6 +19,8 @@ type Confirmation =
   | { command: "STOP_ENGINE" | "EXIT_PAPER_POSITION" | "KILL_SWITCH" }
   | null;
 
+const ACTIVE_COMMAND_STATES = new Set(["pending", "queued", "claimed", "running", "processing"]);
+
 function normalizeStatus(data: ControlStatus, current?: ControlStatus | null): ControlStatus {
   return {
     ...data,
@@ -39,6 +41,52 @@ function relativeHeartbeat(value?: string) {
   const minutes = Math.floor(ageSeconds / 60);
   if (minutes < 60) return `updated ${minutes}m ago`;
   return `updated ${Math.floor(minutes / 60)}h ago`;
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+}
+
+function describeRunPaperError(message: string) {
+  const text = message.trim();
+  const lower = text.toLowerCase();
+
+  if (lower.includes("save groww credentials") || lower.includes("credentials are not configured") || lower.includes("credential file missing")) {
+    return "Groww API key/secret is not configured. Add or upload the Groww credential file in Settings, then press Run PAPER again. PAPER engine was not started.";
+  }
+  if (lower.includes("invalid encrypted credential") || lower.includes("decrypt") || lower.includes("credential format")) {
+    return "The saved Groww credential file could not be read securely. Upload the Groww API key/secret again in Settings. PAPER engine was not started.";
+  }
+  if (
+    lower.includes("growwapiauthenticationexception") ||
+    lower.includes("authentication failed") ||
+    lower.includes("invalid api key") ||
+    lower.includes("invalid credentials") ||
+    lower.includes("invalid secret")
+  ) {
+    return "Groww authentication failed. The API key and secret may be invalid or mismatched, or the API-key session may not be approved. Update the Groww credentials in Settings. PAPER engine was not started.";
+  }
+  if (
+    lower.includes("growwapiauthorisationexception") ||
+    lower.includes("growwapiauthorizationexception") ||
+    lower.includes("authorisation") ||
+    lower.includes("authorization") ||
+    lower.includes("forbidden")
+  ) {
+    return "Groww rejected the saved API credentials or permissions. Check the Groww API key, secret, API approval/subscription and account permissions. PAPER engine was not started.";
+  }
+  if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("connection") || lower.includes("network")) {
+    return "Groww authentication could not complete because the broker connection timed out or was unreachable. PAPER engine was not started.";
+  }
+  if (lower.includes("oracle worker is offline") || lower.includes("oracle") && lower.includes("offline")) {
+    return "Oracle is offline or stale, so Groww authentication cannot be tested. PAPER engine was not started.";
+  }
+  if (lower.includes("paper engine is already running")) return "PAPER engine is already running.";
+  if (lower.includes("stop the live engine")) return "LIVE engine is running. Stop it before Run PAPER can switch execution back to PAPER.";
+
+  return text.startsWith("Groww") || text.startsWith("PAPER")
+    ? `${text}${text.endsWith(".") ? "" : "."} PAPER engine was not started.`
+    : `Run PAPER failed: ${text || "unknown error"}. PAPER engine was not started.`;
 }
 
 export default function SignalDashboard() {
@@ -134,16 +182,75 @@ export default function SignalDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command: commandName, payload }),
       });
-      if (result.duplicate) {
-        setNotice(`${commandName.replaceAll("_", " ")} is already queued or running.`);
-      } else if (commandName === "RUN_PAPER") {
-        setNotice("Groww authentication queued. PAPER starts automatically only after authentication succeeds.");
-      } else {
-        setNotice(`${commandName.replaceAll("_", " ")} queued for Oracle.`);
-      }
+      setNotice(result.duplicate ? `${commandName.replaceAll("_", " ")} is already queued or running.` : `${commandName.replaceAll("_", " ")} queued for Oracle.`);
       await loadStatus();
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "Command failed");
+    } finally {
+      setBusy("");
+      setConfirmation(null);
+    }
+  }
+
+  async function runPaper() {
+    setBusy("RUN_PAPER");
+    setNotice("Checking Groww authentication…");
+    try {
+      const queued = await jsonRequest<{ id: string; duplicate?: boolean }>("/api/control/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: "RUN_PAPER", payload: {} }),
+      });
+
+      const deadline = Date.now() + 45_000;
+      let commandCompleted = false;
+      let authenticationConfirmed = false;
+
+      while (Date.now() < deadline) {
+        await delay(750);
+        const current = await jsonRequest<ControlStatus>("/api/control/status");
+        setStatus((previous) => normalizeStatus(current, previous));
+        setAuth("ready");
+
+        const tracked = current.latestCommand;
+        if (!tracked || tracked.id !== queued.id) continue;
+        const state = (tracked.status ?? "").toLowerCase();
+
+        if (state === "failed" || state === "error") {
+          throw new Error(tracked.error ?? "Groww authentication failed");
+        }
+
+        if (state === "completed") {
+          commandCompleted = true;
+          const result = tracked.result ?? {};
+          const authentication = result.authentication;
+          authenticationConfirmed = Boolean(
+            current.worker.groww_authenticated ||
+            (authentication && typeof authentication === "object" && (authentication as Record<string, unknown>).ok === true),
+          );
+          if (!authenticationConfirmed) {
+            throw new Error("Groww authentication did not verify the saved API key/secret");
+          }
+
+          const paperMode = (current.executionControl?.mode ?? current.paperEngine.mode ?? "paper") === "paper";
+          if (current.paperEngine.running && paperMode) {
+            setNotice("Groww authenticated successfully. PAPER engine is active.");
+            return;
+          }
+          setNotice("Groww authenticated successfully. Starting PAPER engine…");
+        } else if (ACTIVE_COMMAND_STATES.has(state)) {
+          setNotice("Checking Groww authentication…");
+        }
+      }
+
+      if (commandCompleted && authenticationConfirmed) {
+        throw new Error("Groww authenticated, but PAPER engine did not become active");
+      }
+      throw new Error("Groww authentication timed out before Oracle returned a result");
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Run PAPER failed";
+      setNotice(describeRunPaperError(message));
+      await loadStatus();
     } finally {
       setBusy("");
       setConfirmation(null);
@@ -178,19 +285,19 @@ export default function SignalDashboard() {
   const modeLabel = mode === "live" ? (liveArmed ? "LIVE · ARMED" : "LIVE · DISARMED") : "PAPER";
   const latestCommandStatus = (status?.latestCommand?.status ?? "").toLowerCase();
   const runPaperCurrent = status?.latestCommand?.command === "RUN_PAPER";
-  const runPaperActive = Boolean(runPaperCurrent && ["pending", "queued", "claimed", "running", "processing"].includes(latestCommandStatus));
-  const canRunPaper = Boolean(worker.online && status?.credentials.configured && !engine.running && !busy && !runPaperActive);
+  const runPaperActive = Boolean(runPaperCurrent && ACTIVE_COMMAND_STATES.has(latestCommandStatus));
+  const canRunPaper = Boolean(worker.online && !engine.running && !busy && !runPaperActive);
   const canStopEngine = Boolean(worker.online && engine.running && !busy);
   const growwTone = worker.groww_authenticated ? "good" : status?.credentials.configured ? "warn" : "bad";
   const growwLabel = worker.groww_authenticated ? "VERIFIED" : status?.credentials.configured ? "NOT VERIFIED" : "SETUP REQUIRED";
   const runPaperDetail = !worker.online
     ? "Oracle must be online before a run can start."
     : !status?.credentials.configured
-      ? "Add your Groww credential file in Settings first."
+      ? "Press Run PAPER to check setup; if the Groww API key/secret is missing, the dashboard will tell you and keep the engine stopped."
       : engine.running
         ? `${modeLabel} engine is already running.`
-        : "Tests Groww authentication, switches to PAPER, disarms LIVE, then starts the engine.";
-  const noticeIsError = /required|failed|could not|offline|unauthorized|error|stop the live/i.test(notice);
+        : "Run PAPER verifies Groww first. Only a successful authentication switches to PAPER, disarms LIVE and activates the engine.";
+  const noticeIsError = /required|failed|could not|offline|unauthorized|error|invalid|mismatch|rejected|not configured|timed out|stop the live/i.test(notice);
 
   const confirmationCopy = confirmation?.command === "EXIT_PAPER_POSITION"
     ? {
@@ -221,9 +328,9 @@ export default function SignalDashboard() {
         <p className="muted">Start PAPER safely, monitor the market and positions, and react when risk needs attention.</p>
       </div>
       <div className="hero-actions">
-        <button className="primary" type="button" disabled={!canRunPaper} onClick={() => void command("RUN_PAPER")}>
+        <button className="primary" type="button" disabled={!canRunPaper} onClick={() => void runPaper()}>
           {(busy === "RUN_PAPER" || runPaperActive) ? <Icon name="refresh" className="spin" /> : <Icon name="activity" />}
-          {(busy === "RUN_PAPER" || runPaperActive) ? "Starting PAPER…" : "Run PAPER"}
+          {busy === "RUN_PAPER" ? "Checking Groww…" : runPaperActive ? "Starting PAPER…" : "Run PAPER"}
         </button>
         {engine.running && <button className="secondary" type="button" disabled={!canStopEngine} onClick={() => setConfirmation({ command: "STOP_ENGINE" })}><Icon name="stop" />Pause</button>}
         <Link className="ghost" href="/settings"><Icon name="settings" />Settings</Link>
