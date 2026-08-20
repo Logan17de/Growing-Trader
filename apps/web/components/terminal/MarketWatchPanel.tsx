@@ -78,13 +78,15 @@ export function MarketWatchPanel() {
     {error && <div className="notice error" role="alert"><Icon name="x" />{error}</div>}
 
     <section className="card terminal-section">
-      <div className="section-heading compact"><div><p className="eyebrow">Research layer · never executes orders</p><h2>Market Watch / Strategy Discovery</h2></div><span className="status-badge good">OBSERVE → LABEL → STUDY</span></div>
-      <p className="muted threshold-intro">This is deliberately separate from S/R Breakout and S/R Reversal. Oracle continuously records market state; retrospective labels tell us what NIFTY did afterward. We use repeated patterns here to form new strategy hypotheses, then validate them in Replay/PAPER before they can ever become executable.</p>
+      <div className="section-heading compact">
+        <div><p className="eyebrow">Research layer · never executes orders</p><h2>Market Watch / Strategy Discovery</h2></div>
+        <MarketWatchDownload days={days} />
+      </div>
+      <p className="muted threshold-intro">Oracle records cross-market state and labels what NIFTY did afterward. Use the evidence here to discover patterns before validating them in Replay and PAPER.</p>
       <div className="segmented-control large" aria-label="Market Watch history window">
         {([[1,"Today"],[7,"7 days"],[30,"30 days"],[90,"90 days"]] as Array<[WindowDays,string]>).map(([value,label]) => <button type="button" key={value} className={days===value?"active":""} aria-pressed={days===value} onClick={()=>setDays(value)}>{label}</button>)}
       </div>
-      <MarketWatchDownload days={days} />
-      <p className="availability-note">Downloads contain the full analysis-ready Market Watch rows for the selected window, including retrospective outcome labels. CSV is convenient for spreadsheets; JSONL preserves nested strategy/signal context for research and model analysis.</p>
+      <p className="availability-note">Download the selected window as full JSONL logs or CSV. Retrospective outcome labels are included.</p>
       <section className="market-secondary-grid" aria-label="Research dataset coverage">
         <div><span>Observations in DB</span><strong>{data?.observationCount ?? 0}</strong><small>Selected {days}-day window</small></div>
         <div><span>Rows loaded live</span><strong>{coverage.observations}</strong><small>Latest observations for inspection</small></div>
