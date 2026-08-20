@@ -63,15 +63,17 @@ export async function POST(request: Request) {
   }
 
   if (command === "RUN_PAPER") {
-    const [{ data: runtime, error: runtimeError }, { data: execution, error: executionError }] = await Promise.all([
+    const [runtimeResult, executionResult, activeStartResult] = await Promise.all([
       supabase.from("paper_engine_status").select("payload").eq("worker_id", "oracle-primary").maybeSingle(),
       supabase.from("execution_control_state").select("mode").eq("id", true).maybeSingle(),
+      supabase.from("engine_commands").select("id,command,status").in("command", ["START_ENGINE", "START_PAPER_ENGINE"]).in("status", ["queued", "running"]).limit(1).maybeSingle(),
     ]);
-    const readError = runtimeError ?? executionError;
+    const readError = runtimeResult.error ?? executionResult.error ?? activeStartResult.error;
     if (readError) return Response.json({ error: readError.message }, { status: 503 });
-    if (!execution) return Response.json({ error: "execution control is not initialized" }, { status: 409 });
+    if (!executionResult.data) return Response.json({ error: "execution control is not initialized" }, { status: 409 });
+    if (activeStartResult.data) return Response.json({ error: "Another engine start is already queued or running" }, { status: 409 });
 
-    const currentRuntime = runtimePayload(runtime?.payload);
+    const currentRuntime = runtimePayload(runtimeResult.data?.payload);
     if (Boolean(currentRuntime.running)) {
       return Response.json({
         error: currentRuntime.mode === "paper"
