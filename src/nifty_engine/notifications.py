@@ -8,15 +8,15 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
+REPORT_RECIPIENT = "loganlogesh17@gmail.com"
 
 
 def _mail_config() -> tuple[str, str, str] | None:
     key = os.environ.get("RESEND_API_KEY", "").strip()
-    to = os.environ.get("TRADING_REPORT_TO", "").strip()
     sender = os.environ.get("TRADING_REPORT_FROM", "").strip()
-    if not key or not to or not sender:
+    if not key or not sender:
         return None
-    return key, to, sender
+    return key, REPORT_RECIPIENT, sender
 
 
 def _send(subject: str, html: str) -> dict[str, Any]:

@@ -3,6 +3,8 @@ import { buildCurrentStatusReport, type CurrentStatusReport } from "@/lib/curren
 
 export const dynamic = "force-dynamic";
 
+const REPORT_RECIPIENT = "loganlogesh17@gmail.com";
+
 function escapeHtml(value: unknown) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
 }
@@ -34,10 +36,10 @@ function reportHtml(report: CurrentStatusReport) {
 export async function POST(request: Request) {
   if (!(await isDashboardAuthorized())) return Response.json({ error: "unauthorized" }, { status: 401 });
   const apiKey = process.env.RESEND_API_KEY?.trim();
-  const to = process.env.TRADING_REPORT_TO?.trim();
+  const to = REPORT_RECIPIENT;
   const from = process.env.TRADING_REPORT_FROM?.trim();
-  if (!apiKey || !to || !from) {
-    return Response.json({ error: "Manual mail export needs RESEND_API_KEY, TRADING_REPORT_TO and TRADING_REPORT_FROM in the Vercel project environment." }, { status: 503 });
+  if (!apiKey || !from) {
+    return Response.json({ error: "Manual mail export needs RESEND_API_KEY and TRADING_REPORT_FROM in the Vercel project environment." }, { status: 503 });
   }
   try {
     const body = await request.json().catch(() => ({})) as { pdfData?: unknown; requestId?: unknown };
