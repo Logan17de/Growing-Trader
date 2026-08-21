@@ -65,6 +65,12 @@ def scheduled_start_command() -> None:
     print(dumps(scheduled_start()))
 
 
+def scheduled_retry_command() -> None:
+    from .ops_automation import scheduled_retry
+
+    print(dumps(scheduled_retry()))
+
+
 def scheduled_shutdown_command() -> None:
     from .ops_automation import scheduled_shutdown
 
@@ -75,7 +81,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="NIFTY market event engine")
     parser.add_argument(
         "command",
-        choices=["paper-demo", "control-agent", "scheduled-start", "scheduled-shutdown"],
+        choices=["paper-demo", "control-agent", "scheduled-start", "scheduled-retry", "scheduled-shutdown"],
     )
     args = parser.parse_args()
     if args.command == "paper-demo":
@@ -84,6 +90,8 @@ def main() -> None:
         control_agent()
     elif args.command == "scheduled-start":
         scheduled_start_command()
+    elif args.command == "scheduled-retry":
+        scheduled_retry_command()
     elif args.command == "scheduled-shutdown":
         scheduled_shutdown_command()
 
