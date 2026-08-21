@@ -60,23 +60,28 @@ EOF
 
 sudo tee "$RETRY_SERVICE_FILE" >/dev/null <<EOF
 [Unit]
-Description=Growing Trader Groww Authentication Retry Watcher
+Description=Growing Trader Autonomous Market Start
 Wants=network-online.target
 After=network-online.target ${SERVICE_NAME}.service
 Requires=${SERVICE_NAME}.service
 
 [Service]
-Type=oneshot
+Type=simple
 User=${RUN_USER}
 WorkingDirectory=${REPO_DIR}
-ExecStart=/bin/bash -lc 'set -a; source "${ENV_FILE}"; set +a; exec "${REPO_DIR}/.venv/bin/nifty-engine" scheduled-retry'
-TimeoutStartSec=8h
+ExecStart=/bin/bash -lc 'set -a; source "${ENV_FILE}"; set +a; exec "${REPO_DIR}/.venv/bin/python" -m nifty_engine.autonomous_start'
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+KillSignal=SIGTERM
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl enable "$SERVICE_NAME" "$RETRY_SERVICE_NAME"
 sudo systemctl restart "$SERVICE_NAME"
+sudo systemctl restart "$RETRY_SERVICE_NAME"
 sudo systemctl --no-pager --full status "$SERVICE_NAME" || true
+sudo systemctl --no-pager --full status "$RETRY_SERVICE_NAME" || true
