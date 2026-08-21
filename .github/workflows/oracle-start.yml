@@ -91,6 +91,38 @@ jobs:
           echo "Oracle SSH did not become available" >&2
           exit 1
 
+      - name: Install startup email configuration on Oracle
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          TRADING_REPORT_TO: ${{ secrets.TRADING_REPORT_TO }}
+          TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$RESEND_API_KEY" || -z "$TRADING_REPORT_TO" || -z "$TRADING_REPORT_FROM" ]]; then
+            echo "Report email secrets are incomplete; startup success emails will be skipped."
+            exit 0
+          fi
+          python - <<'PY' > /tmp/growing-trader-mail.env
+          import os
+          import shlex
+          for name in ("RESEND_API_KEY", "TRADING_REPORT_TO", "TRADING_REPORT_FROM"):
+              print(f"{name}={shlex.quote(os.environ[name])}")
+          PY
+          scp -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new /tmp/growing-trader-mail.env \
+            "$ORACLE_USER@$ORACLE_HOST:/tmp/growing-trader-mail.env"
+          ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" '
+            set -euo pipefail
+            test -f /home/ubuntu/api.env
+            umask 077
+            tmp="$(mktemp /home/ubuntu/api.env.XXXXXX)"
+            grep -v -E "^(RESEND_API_KEY|TRADING_REPORT_TO|TRADING_REPORT_FROM)=" /home/ubuntu/api.env > "$tmp" || true
+            cat /tmp/growing-trader-mail.env >> "$tmp"
+            mv "$tmp" /home/ubuntu/api.env
+            chmod 600 /home/ubuntu/api.env
+            rm -f /tmp/growing-trader-mail.env
+          '
+          rm -f /tmp/growing-trader-mail.env
+
       - name: Update repo and install systemd services
         run: |
           ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
@@ -175,10 +207,12 @@ jobs:
             echo '- Oracle control agent installed/updated and enabled'
             if [[ "${{ steps.paper_start.outputs.ok }}" == "true" ]]; then
               echo '- Groww authenticated and PAPER startup was accepted'
+              echo '- Trading engine started email was attempted to the report address'
               echo '- Market Watch can collect the session automatically'
             else
               echo '- Initial Groww authentication failed; one alert email was attempted'
-              echo '- Oracle will retry every 10 minutes with no further emails'
+              echo '- Oracle will retry every 10 minutes with no repeated failure emails'
               echo '- PAPER/Market Watch will start automatically after Groww accepts the saved credentials'
+              echo '- A trading engine started email will be attempted when a later retry succeeds'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
