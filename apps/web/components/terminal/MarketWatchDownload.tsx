@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { Icon } from "@/components/terminal/Icon";
 
@@ -26,7 +25,7 @@ export function MarketWatchDownload({ days }: { days: 1 | 7 | 30 | 90 }) {
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => null) as { error?: string } | null;
-        throw new Error(payload?.error ?? `Market Watch ${format.toUpperCase()} export failed`);
+        throw new Error(payload?.error ?? `Market Watch ${format.toUpperCase()} download failed`);
       }
       const blob = await response.blob();
       const fallback = `market-watch-${days}d.${format}`;
@@ -40,25 +39,22 @@ export function MarketWatchDownload({ days }: { days: 1 | 7 | 30 | 90 }) {
       anchor.remove();
       URL.revokeObjectURL(href);
     } catch (downloadError) {
-      setError(downloadError instanceof Error ? downloadError.message : "Market Watch export failed");
+      setError(downloadError instanceof Error ? downloadError.message : "Market Watch download failed");
     } finally {
       setDownloading(null);
     }
   }
 
   return <div>
-    <div className="hero-actions" aria-label="Market Watch research actions">
-      <button className="primary" type="button" disabled={downloading != null} onClick={() => void download("csv")}>
-        <Icon name={downloading === "csv" ? "refresh" : "download"} className={downloading === "csv" ? "spin" : ""} />
-        {downloading === "csv" ? "Preparing CSV…" : "Export CSV"}
-      </button>
-      <button className="ghost" type="button" disabled={downloading != null} onClick={() => void download("jsonl")}>
+    <div className="hero-actions" aria-label="Download Market Watch logs">
+      <button className="primary" type="button" disabled={downloading != null} onClick={() => void download("jsonl")}>
         <Icon name={downloading === "jsonl" ? "refresh" : "download"} className={downloading === "jsonl" ? "spin" : ""} />
-        {downloading === "jsonl" ? "Preparing JSONL…" : "Export JSONL"}
+        {downloading === "jsonl" ? "Preparing logs…" : "Download logs"}
       </button>
-      <Link className="secondary" href="/strategies">
-        <Icon name="strategy" />Analyze &amp; build strategy<Icon name="arrow-right" />
-      </Link>
+      <button className="ghost" type="button" disabled={downloading != null} onClick={() => void download("csv")}>
+        <Icon name={downloading === "csv" ? "refresh" : "download"} className={downloading === "csv" ? "spin" : ""} />
+        {downloading === "csv" ? "Preparing CSV…" : "Download CSV"}
+      </button>
     </div>
     {error && <p className="availability-note bad" role="alert">{error}</p>}
   </div>;

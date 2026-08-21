@@ -5,6 +5,8 @@ REPO_DIR="${GT_REPO_DIR:-/home/ubuntu/Growing-Trader}"
 ENV_FILE="${GT_ENV_FILE:-/home/ubuntu/api.env}"
 SERVICE_NAME="${GT_SERVICE_NAME:-growing-trader}"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+RETRY_SERVICE_NAME="${GT_RETRY_SERVICE_NAME:-growing-trader-market-start}"
+RETRY_SERVICE_FILE="/etc/systemd/system/${RETRY_SERVICE_NAME}.service"
 RUN_USER="${GT_RUN_USER:-ubuntu}"
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
@@ -24,8 +26,6 @@ run_as_service_user() {
   fi
 }
 
-# The repository deploy key and GitHub known_hosts belong to the normal Oracle
-# user. Never run these Git commands as root; doing so bypasses that SSH setup.
 run_as_service_user git -C "$REPO_DIR" fetch origin main
 run_as_service_user git -C "$REPO_DIR" reset --hard origin/main
 
@@ -53,6 +53,24 @@ Restart=on-failure
 RestartSec=5
 TimeoutStopSec=45
 KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee "$RETRY_SERVICE_FILE" >/dev/null <<EOF
+[Unit]
+Description=Growing Trader Groww Authentication Retry Watcher
+Wants=network-online.target
+After=network-online.target ${SERVICE_NAME}.service
+Requires=${SERVICE_NAME}.service
+
+[Service]
+Type=oneshot
+User=${RUN_USER}
+WorkingDirectory=${REPO_DIR}
+ExecStart=/bin/bash -lc 'set -a; source "${ENV_FILE}"; set +a; exec "${REPO_DIR}/.venv/bin/nifty-engine" scheduled-retry'
+TimeoutStartSec=8h
 
 [Install]
 WantedBy=multi-user.target

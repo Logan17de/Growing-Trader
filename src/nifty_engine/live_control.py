@@ -45,6 +45,14 @@ class LiveOracleControlAgent(OracleControlAgent):
         self._write_paper_status()
         return {"ok": True, "trading_engine": status, "paper_engine": status}
 
+    def _run_paper(self) -> dict[str, Any]:
+        """Verify Groww first, then start the engine only in PAPER mode."""
+        if self._execution_mode() != "paper":
+            raise RuntimeError("RUN_PAPER requires PAPER execution mode")
+        authentication = self._test_auth()
+        started = self._start_engine()
+        return {"ok": True, "authentication": authentication, **started}
+
     def _stop_engine(self) -> dict[str, Any]:
         status = self.paper_runtime.stop()
         self._write_paper_status()
@@ -404,6 +412,8 @@ class LiveOracleControlAgent(OracleControlAgent):
                 result = self._test_auth()
             elif command_name == "TEST_MARKET_DATA":
                 result = self._test_market_data()
+            elif command_name == "RUN_PAPER":
+                result = self._run_paper()
             elif command_name == "START_PAPER_ENGINE":
                 self._require_paper_mode_for_legacy_start()
                 result = self._start_engine()
@@ -439,7 +449,7 @@ class LiveOracleControlAgent(OracleControlAgent):
             self.last_error = f"{type(exc).__name__}: {exc}"
             if command_name == "TEST_MARKET_DATA":
                 self.market_data_status = "error"
-            if command_name == "TEST_AUTH":
+            if command_name in {"TEST_AUTH", "RUN_PAPER"}:
                 self.groww_authenticated = False
             self.control.complete_command(command_id, error=self.last_error)
             self._activity("critical", "command_failed", f"{command_name} failed", self.last_error)

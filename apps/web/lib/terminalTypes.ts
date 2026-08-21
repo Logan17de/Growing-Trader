@@ -77,7 +77,7 @@ export type ControlStatus = {
 export type TradingDataSnapshot = Pick<ControlStatus, "recentSignals" | "paperOrders" | "paperTrades" | "paperOutcomes">;
 
 export type ControlCommand =
-  | "TEST_AUTH" | "TEST_MARKET_DATA" | "START_PAPER_ENGINE" | "STOP_PAPER_ENGINE" | "START_ENGINE" | "STOP_ENGINE" | "STOP"
+  | "TEST_AUTH" | "TEST_MARKET_DATA" | "RUN_PAPER" | "START_PAPER_ENGINE" | "STOP_PAPER_ENGINE" | "START_ENGINE" | "STOP_ENGINE" | "STOP"
   | "EXIT_PAPER_POSITION" | "UPDATE_PAPER_POSITION" | "KILL_SWITCH" | "RESET_KILL_SWITCH" | "CHECK_LIVE_POSITIONS" | "RUN_REPLAY"
   | "MANUAL_LIVE_ENTRY";
 

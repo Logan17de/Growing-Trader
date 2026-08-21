@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time as wall_time, timezone
 import time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .control_plane import SupabaseControlPlane
+
+IST = ZoneInfo("Asia/Kolkata")
+AUTH_RETRY_SECONDS = 10 * 60
+AUTH_RETRY_CUTOFF = wall_time(15, 20)
 
 
 def _first_row(data: Any) -> dict[str, Any] | None:
@@ -96,7 +101,6 @@ def _wait_flat(control: SupabaseControlPlane, mode: str, timeout_seconds: float 
     while time.monotonic() < deadline:
         live_orders = _live_open_orders(control)
         if mode == "live" and not live_orders:
-            # Emergency broker exit can complete while the stopped runtime's status row is stale.
             return
         payload = _runtime_payload(control)
         position = payload.get("open_position") or payload.get("open_paper_position")
@@ -115,41 +119,103 @@ def _broker_audit(control: SupabaseControlPlane, timeout_seconds: float = 90.0) 
     return dict(result)
 
 
+def _force_paper_mode(control: SupabaseControlPlane) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    control.client.table("execution_control_state").update({
+        "mode": "paper",
+        "live_armed": False,
+        "armed_at": None,
+        "updated_at": now,
+    }).eq("id", True).execute()
+
+
 def scheduled_start() -> dict[str, Any]:
+    """Authenticate Groww first, then start the autonomous PAPER runtime.
+
+    Scheduled background startup is deliberately PAPER-only. LIVE always remains
+    an explicit dashboard action and is disarmed before the morning automation.
+    """
     control = SupabaseControlPlane.from_env()
     _wait_worker(control)
     live_orders = _live_open_orders(control)
     if live_orders:
-        raise RuntimeError(f"refusing scheduled start with unresolved LIVE orders: {live_orders}")
+        raise RuntimeError(f"refusing scheduled PAPER start with unresolved LIVE orders: {live_orders}")
 
+    runtime = _runtime_payload(control)
+    if runtime.get("running"):
+        mode = str(runtime.get("mode") or _execution_control(control).get("mode") or "paper")
+        if mode != "paper":
+            raise RuntimeError("LIVE engine is already running; refusing autonomous PAPER switch")
+        return {"ok": True, "mode": "paper", "started": False, "reason": "PAPER engine already running"}
+
+    _force_paper_mode(control)
     control.client.table("risk_control_state").update({
         "kill_switch": False,
         "block_new_entries": False,
-        "reason": "Scheduled morning startup",
+        "reason": "Scheduled morning PAPER startup",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", True).execute()
 
-    execution = _execution_control(control)
-    mode = str(execution.get("mode") or "paper")
-    armed = bool(execution.get("live_armed"))
-    runtime = _runtime_payload(control)
-    if runtime.get("running"):
-        return {"ok": True, "mode": mode, "started": False, "reason": "engine already running"}
-    if mode == "live" and not armed:
-        return {
-            "ok": True,
-            "mode": mode,
-            "started": False,
-            "reason": "LIVE mode is disarmed; Oracle control agent is online and waiting for dashboard arm/start",
-        }
-    if mode == "live":
-        audit = _broker_audit(control)
-        if not bool(audit.get("flat")):
-            raise RuntimeError(f"refusing LIVE startup because broker is not flat: {audit}")
-
-    command_id = _queue_command(control, "START_ENGINE")
+    command_id = _queue_command(control, "RUN_PAPER")
     result = _wait_command(control, command_id, 90.0)
-    return {"ok": True, "mode": mode, "started": True, "command": result}
+    payload = result.get("result") if isinstance(result.get("result"), dict) else {}
+    authentication = payload.get("authentication") if isinstance(payload, dict) else None
+    if not isinstance(authentication, dict) or authentication.get("ok") is not True:
+        raise RuntimeError("RUN_PAPER completed without confirmed Groww authentication")
+    return {"ok": True, "mode": "paper", "started": True, "command": result}
+
+
+def scheduled_retry(
+    *,
+    interval_seconds: float = AUTH_RETRY_SECONDS,
+    initial_delay_seconds: float = AUTH_RETRY_SECONDS,
+) -> dict[str, Any]:
+    """Retry Groww authentication every ten minutes without sending any email.
+
+    The morning GitHub workflow performs the first attempt and owns the single
+    notification email. This Oracle-side watcher starts with a ten-minute delay,
+    retries until Groww accepts the saved key/secret, and exits at the final safe
+    startup cutoff before the market-close shutdown window.
+    """
+    if interval_seconds <= 0 or initial_delay_seconds < 0:
+        raise ValueError("retry intervals must be non-negative and interval_seconds must be positive")
+
+    last_error: str | None = None
+    attempts = 0
+    delay_seconds = initial_delay_seconds
+
+    while True:
+        now = datetime.now(IST)
+        if now.weekday() >= 5 or now.time() >= AUTH_RETRY_CUTOFF:
+            return {
+                "ok": False,
+                "started": False,
+                "attempts": attempts,
+                "last_error": last_error,
+                "reason": "Groww was not authenticated before the final safe startup cutoff",
+            }
+
+        if delay_seconds > 0:
+            seconds_until_cutoff = max(
+                (datetime.combine(now.date(), AUTH_RETRY_CUTOFF, tzinfo=IST) - now).total_seconds(),
+                0.0,
+            )
+            sleep_for = min(delay_seconds, seconds_until_cutoff)
+            if sleep_for <= 0:
+                continue
+            time.sleep(sleep_for)
+
+        now = datetime.now(IST)
+        if now.time() >= AUTH_RETRY_CUTOFF:
+            continue
+
+        attempts += 1
+        try:
+            result = scheduled_start()
+            return {"ok": True, "started": True, "attempts": attempts, "result": result}
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            delay_seconds = interval_seconds
 
 
 def scheduled_shutdown() -> dict[str, Any]:

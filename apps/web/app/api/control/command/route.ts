@@ -2,17 +2,21 @@ import { isDashboardAuthorized } from "@/lib/dashboardAuth";
 import { serverSupabase } from "@/lib/serverSupabase";
 
 const ALLOWED = new Set([
-  "TEST_AUTH", "TEST_MARKET_DATA", "START_PAPER_ENGINE", "STOP_PAPER_ENGINE", "START_ENGINE", "STOP_ENGINE", "STOP",
+  "TEST_AUTH", "TEST_MARKET_DATA", "RUN_PAPER", "START_PAPER_ENGINE", "STOP_PAPER_ENGINE", "START_ENGINE", "STOP_ENGINE", "STOP",
   "EXIT_PAPER_POSITION", "UPDATE_PAPER_POSITION", "KILL_SWITCH", "RESET_KILL_SWITCH", "CHECK_LIVE_POSITIONS", "RUN_REPLAY",
   "MANUAL_LIVE_ENTRY",
 ]);
 
-const NEEDS_CREDENTIALS = new Set(["TEST_AUTH", "TEST_MARKET_DATA", "START_PAPER_ENGINE", "START_ENGINE", "CHECK_LIVE_POSITIONS", "MANUAL_LIVE_ENTRY"]);
+const NEEDS_CREDENTIALS = new Set(["TEST_AUTH", "TEST_MARKET_DATA", "RUN_PAPER", "START_PAPER_ENGINE", "START_ENGINE", "CHECK_LIVE_POSITIONS", "MANUAL_LIVE_ENTRY"]);
 
 function workerIsOnline(worker: { last_heartbeat?: string; state?: string } | null): boolean {
   if (!worker?.last_heartbeat || worker.state === "stopped") return false;
   const heartbeat = Date.parse(worker.last_heartbeat);
   return Number.isFinite(heartbeat) && Date.now() - heartbeat < 20_000;
+}
+
+function runtimePayload(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
 function validatePayload(command: string, payload: Record<string, unknown>) {
@@ -58,11 +62,41 @@ export async function POST(request: Request) {
     if (!credentials) return Response.json({ error: "Save Groww credentials before starting broker work" }, { status: 409 });
   }
 
+  if (command === "RUN_PAPER") {
+    const [runtimeResult, executionResult, activeStartResult] = await Promise.all([
+      supabase.from("paper_engine_status").select("payload").eq("worker_id", "oracle-primary").maybeSingle(),
+      supabase.from("execution_control_state").select("mode").eq("id", true).maybeSingle(),
+      supabase.from("engine_commands").select("id,command,status").in("command", ["START_ENGINE", "START_PAPER_ENGINE"]).in("status", ["queued", "running"]).limit(1).maybeSingle(),
+    ]);
+    const readError = runtimeResult.error ?? executionResult.error ?? activeStartResult.error;
+    if (readError) return Response.json({ error: readError.message }, { status: 503 });
+    if (!executionResult.data) return Response.json({ error: "execution control is not initialized" }, { status: 409 });
+    if (activeStartResult.data) return Response.json({ error: "Another engine start is already queued or running" }, { status: 409 });
+
+    const currentRuntime = runtimePayload(runtimeResult.data?.payload);
+    if (Boolean(currentRuntime.running)) {
+      return Response.json({
+        error: currentRuntime.mode === "paper"
+          ? "PAPER engine is already running"
+          : "Stop the LIVE engine before switching to PAPER",
+      }, { status: 409 });
+    }
+
+    const now = new Date().toISOString();
+    const { error: modeError } = await supabase.from("execution_control_state").update({
+      mode: "paper",
+      live_armed: false,
+      armed_at: null,
+      updated_at: now,
+    }).eq("id", true);
+    if (modeError) return Response.json({ error: modeError.message }, { status: 503 });
+  }
+
   if (["EXIT_PAPER_POSITION", "UPDATE_PAPER_POSITION"].includes(command)) {
     const { data: runtime, error } = await supabase.from("paper_engine_status").select("payload").eq("worker_id", "oracle-primary").maybeSingle();
     if (error) return Response.json({ error: error.message }, { status: 503 });
-    const payloadRecord = runtime?.payload && typeof runtime.payload === "object" ? runtime.payload as Record<string, unknown> : {};
-    const position = payloadRecord.open_position ?? payloadRecord.open_paper_position ?? null;
+    const currentRuntime = runtimePayload(runtime?.payload);
+    const position = currentRuntime.open_position ?? currentRuntime.open_paper_position ?? null;
     if (!position) return Response.json({ error: "No open trading position" }, { status: 409 });
   }
 
@@ -89,7 +123,7 @@ export async function POST(request: Request) {
     if (riskResult.data?.kill_switch || riskResult.data?.block_new_entries) {
       return Response.json({ error: "Manual entry is blocked by the current risk / kill-switch state" }, { status: 409 });
     }
-    const runtime = runtimeResult.data?.payload && typeof runtimeResult.data.payload === "object" ? runtimeResult.data.payload as Record<string, unknown> : {};
+    const runtime = runtimePayload(runtimeResult.data?.payload);
     if (!runtime.running || runtime.mode !== "live") {
       return Response.json({ error: "Start the LIVE trading engine before placing a manual app trade" }, { status: 409 });
     }
