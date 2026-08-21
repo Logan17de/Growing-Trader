@@ -9,7 +9,7 @@ from .control_plane import SupabaseControlPlane
 
 IST = ZoneInfo("Asia/Kolkata")
 AUTH_RETRY_SECONDS = 10 * 60
-AUTH_RETRY_CUTOFF = wall_time(15, 30)
+AUTH_RETRY_CUTOFF = wall_time(15, 20)
 
 
 def _first_row(data: Any) -> dict[str, Any] | None:
@@ -174,7 +174,8 @@ def scheduled_retry(
 
     The morning GitHub workflow performs the first attempt and owns the single
     notification email. This Oracle-side watcher starts with a ten-minute delay,
-    retries until Groww accepts the saved key/secret, and exits at market close.
+    retries until Groww accepts the saved key/secret, and exits at the final safe
+    startup cutoff before the market-close shutdown window.
     """
     if interval_seconds <= 0 or initial_delay_seconds < 0:
         raise ValueError("retry intervals must be non-negative and interval_seconds must be positive")
@@ -191,7 +192,7 @@ def scheduled_retry(
                 "started": False,
                 "attempts": attempts,
                 "last_error": last_error,
-                "reason": "Groww was not authenticated before the market-close retry cutoff",
+                "reason": "Groww was not authenticated before the final safe startup cutoff",
             }
 
         if delay_seconds > 0:
