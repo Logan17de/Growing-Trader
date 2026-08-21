@@ -2,7 +2,7 @@ name: Oracle Market Stop
 
 on:
   schedule:
-    - cron: "35 15 * * 1-5"
+    - cron: "25 15 * * 1-5"
       timezone: "Asia/Kolkata"
   workflow_dispatch:
 
@@ -94,7 +94,7 @@ jobs:
         run: |
           {
             echo '### Oracle close automation complete'
-            echo '- Oracle remained available through the 15:30 IST NSE close'
+            echo '- Oracle stayed active until 15:25 IST, preserving a five-minute exit buffer before NSE close'
             echo '- Groww authentication retry watcher was stopped'
             echo '- New entries were blocked before shutdown'
             echo '- Any managed position was required to become flat'
