@@ -39,6 +39,7 @@ export function DashboardOtpGate({ children }: { children: ReactNode }) {
       .then((result) => {
         if (result.authenticated) {
           setAuthorized(true);
+          autoSent.current = false;
           return;
         }
         setAuthorized(false);
@@ -84,6 +85,7 @@ export function DashboardOtpGate({ children }: { children: ReactNode }) {
       });
       setCode("");
       setChallenge(null);
+      autoSent.current = false;
       setAuthorized(true);
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "Code verification failed");
