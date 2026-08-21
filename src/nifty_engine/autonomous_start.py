@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, time as wall_time
+from datetime import datetime, time as wall_time, timezone
 import logging
 import time
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .control_plane import SupabaseControlPlane
 from .notifications import send_engine_started_email, send_engine_waiting_email
 from .ops_automation import scheduled_start
 
@@ -13,6 +14,7 @@ IST = ZoneInfo("Asia/Kolkata")
 MARKET_START_TIME = wall_time(9, 10)
 FINAL_START_CUTOFF = wall_time(15, 20)
 RETRY_SECONDS = 10 * 60
+RESTART_STATUS_SETTLE_SECONDS = 3.0
 
 
 def _seconds_until(now: datetime, target: wall_time) -> float:
@@ -27,6 +29,44 @@ def _notify_waiting_once(error: str, already_sent: bool) -> bool:
     if not notification.get("sent"):
         logging.warning("Trading-engine waiting email was not sent: %s", notification.get("reason", "unknown reason"))
     return True
+
+
+def _confirmed_runtime_running(max_age_seconds: float = 15.0) -> bool:
+    """Confirm that PAPER-running status is fresh after a control-agent restart.
+
+    During a service replacement, Supabase can briefly retain the previous process's
+    `running=true` payload.  Treat it as authoritative only when it remains fresh
+    after a short settle period; otherwise the autonomous starter must try again.
+    """
+    try:
+        control = SupabaseControlPlane.from_env()
+        response = control.client.table("paper_engine_status").select(
+            "payload,updated_at"
+        ).order("updated_at", desc=True).limit(1).execute()
+        data = response.data
+        row: dict[str, Any] | None = None
+        if isinstance(data, dict):
+            row = dict(data)
+        elif isinstance(data, list) and data and isinstance(data[0], dict):
+            row = dict(data[0])
+        if not row or not row.get("updated_at"):
+            return False
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            return False
+        updated_at = datetime.fromisoformat(str(row["updated_at"]).replace("Z", "+00:00"))
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - updated_at.astimezone(timezone.utc)).total_seconds()
+        state = str(payload.get("state") or "")
+        return (
+            -2.0 <= age <= max_age_seconds
+            and bool(payload.get("running"))
+            and state not in {"stopped", "stopping"}
+        )
+    except Exception:
+        logging.debug("Could not confirm fresh PAPER runtime status", exc_info=True)
+        return False
 
 
 def run_autonomous_start() -> dict[str, Any]:
@@ -76,9 +116,33 @@ def run_autonomous_start() -> dict[str, Any]:
                             "Trading-engine startup email was not sent: %s",
                             notification.get("reason", "unknown reason"),
                         )
+                    return {
+                        "ok": True,
+                        "started": True,
+                        "attempts": attempts,
+                        "result": result,
+                    }
+
+                # A newly restarted control agent can momentarily inherit the old
+                # process's `running=true` Supabase payload.  Do not exit the
+                # autonomous starter until that status is confirmed after settling.
+                if str(result.get("reason") or "") == "PAPER engine already running":
+                    time.sleep(RESTART_STATUS_SETTLE_SECONDS)
+                    if _confirmed_runtime_running():
+                        return {
+                            "ok": True,
+                            "started": False,
+                            "attempts": attempts,
+                            "result": result,
+                        }
+                    last_error = "stale PAPER-running status observed during control-agent restart"
+                    logging.warning("%s; retrying startup immediately", last_error)
+                    time.sleep(2.0)
+                    continue
+
                 return {
                     "ok": True,
-                    "started": bool(result.get("started")),
+                    "started": False,
                     "attempts": attempts,
                     "result": result,
                 }
