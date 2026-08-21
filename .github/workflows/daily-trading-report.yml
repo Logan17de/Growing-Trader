@@ -2,7 +2,7 @@ name: Daily Trading Email Report
 
 on:
   schedule:
-    - cron: "35 15 * * 1-5"
+    - cron: "45 15 * * 1-5"
       timezone: "Asia/Kolkata"
   workflow_dispatch:
     inputs:
@@ -62,6 +62,7 @@ jobs:
           echo "date=$session_date" >> "$GITHUB_OUTPUT"
 
       - name: Export report inputs from Supabase
+        id: inputs
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SESSION_DATE: ${{ steps.session.outputs.date }}
@@ -151,20 +152,30 @@ jobs:
               'last_command', command, 'status', status, 'result', result, 'error', error,
               'created_at', created_at, 'completed_at', completed_at
             ) from public.engine_commands
-              where command in ('STOP_ENGINE','KILL_SWITCH')
+              where command in ('RUN_PAPER','STOP_ENGINE','KILL_SWITCH')
                 and created_at >= ((:'session_date'::date::timestamp) at time zone 'Asia/Kolkata')
                 and created_at < (((:'session_date'::date + 1)::timestamp) at time zone 'Asia/Kolkata')
               order by created_at desc limit 1), '{}'::json)
           )::text;
           SQL
 
+          trade_rows="$(wc -l < report-input/trades.jsonl)"
+          minute_rows="$(wc -l < report-input/minute.jsonl)"
+          watch_rows="$(wc -l < report-input/watch.jsonl)"
+          if [[ "$minute_rows" -gt 0 || "$watch_rows" -gt 0 ]]; then
+            echo "market_analysis=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "market_analysis=false" >> "$GITHUB_OUTPUT"
+          fi
+
           echo "### Daily report input" >> "$GITHUB_STEP_SUMMARY"
           echo "- Session: $SESSION_DATE" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Month trade rows: $(wc -l < report-input/trades.jsonl)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Minute market rows: $(wc -l < report-input/minute.jsonl)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Market Watch rows: $(wc -l < report-input/watch.jsonl)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Month trade rows: $trade_rows" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Minute market rows: $minute_rows" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Market Watch rows: $watch_rows" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Generate and optionally send report
+      - name: Generate and optionally send trading report
+        if: steps.inputs.outputs.market_analysis == 'true'
         env:
           SESSION_DATE: ${{ steps.session.outputs.date }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
@@ -186,7 +197,82 @@ jobs:
           args=(--session-date "$SESSION_DATE" --input-dir report-input --output-dir daily-report)
           if [ "$send" = true ]; then args+=(--send); fi
           python scripts/generate_daily_report.py "${args[@]}"
+          echo "- Market analysis available: yes" >> "$GITHUB_STEP_SUMMARY"
           echo "- Email delivery requested: $send" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send no-market-analysis report
+        if: steps.inputs.outputs.market_analysis != 'true'
+        env:
+          SESSION_DATE: ${{ steps.session.outputs.date }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          TRADING_REPORT_TO: ${{ secrets.TRADING_REPORT_TO }}
+          TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
+          TRADING_REPORT_NAME: ${{ vars.TRADING_REPORT_NAME || 'Logan' }}
+          MANUAL_SEND: ${{ inputs.send_email }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p daily-report
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime
+          from html import escape
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+
+          session = os.environ["SESSION_DATE"]
+          label = datetime.strptime(session, "%Y-%m-%d").strftime("%d %b %Y")
+          name = os.environ.get("TRADING_REPORT_NAME", "Logan")
+          metadata_path = Path("report-input/metadata.json")
+          metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() and metadata_path.read_text().strip() else {}
+          worker = metadata.get("worker") if isinstance(metadata.get("worker"), dict) else {}
+          last_error = str(worker.get("last_error") or "Groww authentication was not available during the market session.")
+          html = f"""<!doctype html><html><body style='margin:0;background:#f4f7fb;font-family:Arial,sans-serif;color:#172033'>
+          <div style='max-width:680px;margin:24px auto;background:white;padding:28px;border-radius:14px'>
+            <div style='font-size:22px;font-weight:800'>📊 Growing Trader</div>
+            <h1 style='font-size:24px;margin:24px 0 10px'>No market analysis today</h1>
+            <p>Hi {escape(name)},</p>
+            <p>Growing Trader did not collect enough authenticated Groww market data on <strong>{label}</strong>, so there is no Market Watch or PAPER analysis to report.</p>
+            <p>No trading analysis has been invented or backfilled for the missing session.</p>
+            <div style='margin-top:18px;padding:14px;background:#f5f7fa;border-radius:9px;font-size:12px'><strong>Last recorded status:</strong><br>{escape(last_error)}</div>
+            <p style='margin-top:18px;color:#667085;font-size:12px'>The saved Groww credentials remain encrypted in Supabase. The next market-day startup will test them again automatically.</p>
+          </div></body></html>"""
+          Path(f"daily-report/no-market-analysis-{session}.html").write_text(html, encoding="utf-8")
+          Path(f"daily-report/daily-report-{session}.json").write_text(json.dumps({
+              "session_date": session,
+              "market_analysis": False,
+              "message": "No market analysis today",
+              "last_error": last_error,
+          }, indent=2), encoding="utf-8")
+
+          send = not (os.environ.get("EVENT_NAME") == "workflow_dispatch" and os.environ.get("MANUAL_SEND", "true") != "true")
+          key = os.environ.get("RESEND_API_KEY", "").strip()
+          to = os.environ.get("TRADING_REPORT_TO", "").strip()
+          sender = os.environ.get("TRADING_REPORT_FROM", "").strip()
+          if not send:
+              print("Manual run requested without email delivery.")
+              raise SystemExit(0)
+          if not key or not to or not sender:
+              print("Email secrets are incomplete; no-analysis report was archived without delivery.")
+              raise SystemExit(0)
+          payload = json.dumps({
+              "from": sender,
+              "to": [to],
+              "subject": f"No market analysis today — {label}",
+              "html": html,
+          }).encode()
+          req = Request(
+              "https://api.resend.com/emails",
+              data=payload,
+              headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+              method="POST",
+          )
+          with urlopen(req, timeout=20) as response:
+              print(response.read().decode())
+          PY
+          echo "- Market analysis available: no" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Sent/archived explicit 'No market analysis today' report" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload report artifact
         if: always()
