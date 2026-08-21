@@ -10,17 +10,43 @@ from zoneinfo import ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 
 
-def send_engine_started_email(result: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Send a best-effort startup email after autonomous PAPER actually starts.
-
-    Missing mail configuration or delivery failure never changes engine state.
-    """
+def _mail_config() -> tuple[str, str, str] | None:
     key = os.environ.get("RESEND_API_KEY", "").strip()
     to = os.environ.get("TRADING_REPORT_TO", "").strip()
     sender = os.environ.get("TRADING_REPORT_FROM", "").strip()
     if not key or not to or not sender:
+        return None
+    return key, to, sender
+
+
+def _send(subject: str, html: str) -> dict[str, Any]:
+    config = _mail_config()
+    if config is None:
         return {"ok": False, "sent": False, "reason": "startup email configuration is incomplete"}
 
+    key, to, sender = config
+    payload = json.dumps({
+        "from": sender,
+        "to": [to],
+        "subject": subject,
+        "html": html,
+    }).encode()
+    request = Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            body = response.read().decode()
+        return {"ok": True, "sent": True, "response": body}
+    except Exception as exc:  # Notifications must never change trading state.
+        return {"ok": False, "sent": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def send_engine_started_email(result: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Send a best-effort email only after autonomous PAPER actually starts."""
     now = datetime.now(IST)
     attempts = None
     if isinstance(result, dict):
@@ -31,7 +57,7 @@ def send_engine_started_email(result: dict[str, Any] | None = None) -> dict[str,
     retry_note = (
         f"Groww authentication succeeded after {attempts} retry attempt{'s' if attempts != 1 else ''}."
         if attempts
-        else "Groww authentication succeeded on the scheduled startup check."
+        else "Groww authentication succeeded on the startup check."
     )
     html = f"""
     <div style='font-family:Arial,sans-serif;max-width:640px;margin:auto;color:#172033'>
@@ -46,21 +72,23 @@ def send_engine_started_email(result: dict[str, Any] | None = None) -> dict[str,
       </div>
     </div>
     """
-    payload = json.dumps({
-        "from": sender,
-        "to": [to],
-        "subject": "✅ Trading engine is started — Growing Trader",
-        "html": html,
-    }).encode()
-    request = Request(
-        "https://api.resend.com/emails",
-        data=payload,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=20) as response:
-            body = response.read().decode()
-        return {"ok": True, "sent": True, "response": body}
-    except Exception as exc:  # Notification failure must never stop the trading engine.
-        return {"ok": False, "sent": False, "reason": f"{type(exc).__name__}: {exc}"}
+    return _send("✅ Trading engine is started — Growing Trader", html)
+
+
+def send_engine_waiting_email(error: str | None = None) -> dict[str, Any]:
+    """Send one best-effort morning alert when autonomous PAPER cannot start yet."""
+    now = datetime.now(IST)
+    detail = (error or "Groww authentication/startup has not succeeded yet").strip()
+    html = f"""
+    <div style='font-family:Arial,sans-serif;max-width:640px;margin:auto;color:#172033'>
+      <h2>Trading engine is waiting</h2>
+      <p>Oracle is online, but Groww authentication / PAPER startup has not succeeded yet.</p>
+      <p><strong>No PAPER trading engine is running yet.</strong> Oracle will retry automatically every 10 minutes without sending repeated failure emails.</p>
+      <p>As soon as Groww authentication succeeds, PAPER and Market Watch will start automatically and you will receive a separate startup-success email.</p>
+      <div style='padding:12px;background:#f5f7fa;border-radius:8px;font-size:12px'>
+        <strong>Checked:</strong> {now.strftime('%d %b %Y %H:%M:%S')} IST<br>
+        <strong>Latest startup error:</strong> {detail}
+      </div>
+    </div>
+    """
+    return _send("⚠️ Trading engine is waiting — Growing Trader", html)
