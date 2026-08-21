@@ -59,16 +59,30 @@ def control_agent() -> None:
     LiveOracleControlAgent(SupabaseControlPlane.from_env()).run_forever()
 
 
+def _send_startup_notification(result: dict) -> None:
+    from .notifications import send_engine_started_email
+
+    notification = send_engine_started_email(result)
+    if not notification.get("sent"):
+        logging.warning("Trading engine startup email was not sent: %s", notification.get("reason", "unknown reason"))
+
+
 def scheduled_start_command() -> None:
     from .ops_automation import scheduled_start
 
-    print(dumps(scheduled_start()))
+    result = scheduled_start()
+    print(dumps(result))
+    if result.get("ok") and result.get("started"):
+        _send_startup_notification(result)
 
 
 def scheduled_retry_command() -> None:
     from .ops_automation import scheduled_retry
 
-    print(dumps(scheduled_retry()))
+    result = scheduled_retry()
+    print(dumps(result))
+    if result.get("ok") and result.get("started"):
+        _send_startup_notification(result)
 
 
 def scheduled_shutdown_command() -> None:
