@@ -179,7 +179,7 @@ jobs:
         env:
           SESSION_DATE: ${{ steps.session.outputs.date }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          TRADING_REPORT_TO: ${{ secrets.TRADING_REPORT_TO }}
+          TRADING_REPORT_TO: loganlogesh17@gmail.com
           TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
           TRADING_REPORT_NAME: ${{ vars.TRADING_REPORT_NAME || 'Logan' }}
           MANUAL_SEND: ${{ inputs.send_email }}
@@ -205,7 +205,7 @@ jobs:
         env:
           SESSION_DATE: ${{ steps.session.outputs.date }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          TRADING_REPORT_TO: ${{ secrets.TRADING_REPORT_TO }}
+          TRADING_REPORT_TO: loganlogesh17@gmail.com
           TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
           TRADING_REPORT_NAME: ${{ vars.TRADING_REPORT_NAME || 'Logan' }}
           MANUAL_SEND: ${{ inputs.send_email }}
