@@ -108,6 +108,39 @@ jobs:
             exit 1
           fi
 
+      - name: Install startup email configuration on Oracle
+        if: steps.oracle.outputs.state == 'RUNNING' && steps.live.outputs.count == '0'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          TRADING_REPORT_TO: ${{ secrets.TRADING_REPORT_TO }}
+          TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$RESEND_API_KEY" || -z "$TRADING_REPORT_TO" || -z "$TRADING_REPORT_FROM" ]]; then
+            echo "Report email secrets are incomplete; Oracle startup emails will be skipped."
+            exit 0
+          fi
+          python - <<'PY' > /tmp/growing-trader-mail.env
+          import os
+          import shlex
+          for name in ("RESEND_API_KEY", "TRADING_REPORT_TO", "TRADING_REPORT_FROM"):
+              print(f"{name}={shlex.quote(os.environ[name])}")
+          PY
+          scp -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new /tmp/growing-trader-mail.env \
+            "$ORACLE_USER@$ORACLE_HOST:/tmp/growing-trader-mail.env"
+          ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" '
+            set -euo pipefail
+            test -f /home/ubuntu/api.env
+            umask 077
+            tmp="$(mktemp /home/ubuntu/api.env.XXXXXX)"
+            grep -v -E "^(RESEND_API_KEY|TRADING_REPORT_TO|TRADING_REPORT_FROM)=" /home/ubuntu/api.env > "$tmp" || true
+            cat /tmp/growing-trader-mail.env >> "$tmp"
+            mv "$tmp" /home/ubuntu/api.env
+            chmod 600 /home/ubuntu/api.env
+            rm -f /tmp/growing-trader-mail.env
+          '
+          rm -f /tmp/growing-trader-mail.env
+
       - name: Deploy and restart Oracle agent when safe
         if: steps.oracle.outputs.state == 'RUNNING' && steps.live.outputs.count == '0'
         run: |
@@ -135,5 +168,5 @@ jobs:
         run: |
           {
             echo '### Database deployed; Oracle is currently stopped'
-            echo 'No server action is needed. The morning workflow/systemd service will pull the latest main commit on boot.'
+            echo 'No server action is needed. The morning workflow/systemd services will pull the latest main commit on boot.'
           } >> "$GITHUB_STEP_SUMMARY"
