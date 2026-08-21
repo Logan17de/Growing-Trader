@@ -99,7 +99,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "$RESEND_API_KEY" || -z "$TRADING_REPORT_TO" || -z "$TRADING_REPORT_FROM" ]]; then
-            echo "Report email secrets are incomplete; startup success emails will be skipped."
+            echo "Report email secrets are incomplete; Oracle startup emails will be skipped."
             exit 0
           fi
           python - <<'PY' > /tmp/growing-trader-mail.env
@@ -123,80 +123,15 @@ jobs:
           '
           rm -f /tmp/growing-trader-mail.env
 
-      - name: Update repo and install systemd services
+      - name: Update repo and install autonomous Oracle services
         run: |
           ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
             'cd /home/ubuntu/Growing-Trader && git fetch origin main && git reset --hard origin/main && sudo bash scripts/install_oracle_service.sh'
 
-      - name: Initial Groww authentication and PAPER start
-        id: paper_start
-        run: |
-          set +e
-          output="$(ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
-            'cd /home/ubuntu/Growing-Trader && set -a && source /home/ubuntu/api.env && set +a && .venv/bin/nifty-engine scheduled-start' 2>&1)"
-          code=$?
-          set -e
-          printf '%s\n' "$output"
-          if [[ "$code" -eq 0 ]]; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-            echo "error=" >> "$GITHUB_OUTPUT"
-          else
-            error="$(printf '%s' "$output" | tail -c 1800 | tr '\n\r' '  ')"
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "error=$error" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Send one Groww activation alert
-        if: steps.paper_start.outputs.ok != 'true'
-        continue-on-error: true
-        env:
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          TRADING_REPORT_TO: ${{ secrets.TRADING_REPORT_TO }}
-          TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
-          START_ERROR: ${{ steps.paper_start.outputs.error }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          from urllib.request import Request, urlopen
-
-          key = os.environ.get("RESEND_API_KEY", "").strip()
-          to = os.environ.get("TRADING_REPORT_TO", "").strip()
-          sender = os.environ.get("TRADING_REPORT_FROM", "").strip()
-          error = os.environ.get("START_ERROR", "").strip()
-          if not key or not to or not sender:
-              print("Report email secrets are incomplete; skipping morning Groww alert.")
-              raise SystemExit(0)
-          html = f"""
-          <div style='font-family:Arial,sans-serif;max-width:640px;margin:auto;color:#172033'>
-            <h2>Groww API is not yet activated</h2>
-            <p>Growing Trader started the Oracle worker, but Groww authentication did not succeed.</p>
-            <p><strong>No PAPER engine was started.</strong> Oracle will retry the saved Groww API key and secret every 10 minutes without sending more emails.</p>
-            <p>Once Groww accepts the credentials, PAPER and Market Watch will start automatically.</p>
-            <div style='padding:12px;background:#f5f7fa;border-radius:8px;font-size:12px'><strong>Latest check:</strong> {error or 'Groww authentication failed'}</div>
-          </div>
-          """
-          payload = json.dumps({
-              "from": sender,
-              "to": [to],
-              "subject": "⚠️ Groww API is not yet activated — Growing Trader is waiting",
-              "html": html,
-          }).encode()
-          req = Request(
-              "https://api.resend.com/emails",
-              data=payload,
-              headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-              method="POST",
-          )
-          with urlopen(req, timeout=20) as response:
-              print(response.read().decode())
-          PY
-
-      - name: Start ten-minute Oracle authentication retries
-        if: steps.paper_start.outputs.ok != 'true'
+      - name: Verify autonomous market-start service is active
         run: |
           ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
-            'sudo systemctl restart growing-trader-market-start && sudo systemctl --no-pager --full status growing-trader-market-start || true'
+            'sudo systemctl --no-pager --full status growing-trader-market-start || true'
 
       - name: Summary
         run: |
@@ -205,14 +140,6 @@ jobs:
             echo '- Supabase migrations applied'
             echo '- OCI instance is RUNNING'
             echo '- Oracle control agent installed/updated and enabled'
-            if [[ "${{ steps.paper_start.outputs.ok }}" == "true" ]]; then
-              echo '- Groww authenticated and PAPER startup was accepted'
-              echo '- Trading engine started email was attempted to the report address'
-              echo '- Market Watch can collect the session automatically'
-            else
-              echo '- Initial Groww authentication failed; one alert email was attempted'
-              echo '- Oracle will retry every 10 minutes with no repeated failure emails'
-              echo '- PAPER/Market Watch will start automatically after Groww accepts the saved credentials'
-              echo '- A trading engine started email will be attempted when a later retry succeeds'
-            fi
+            echo '- Oracle autonomous market-start service installed/updated, enabled, and started'
+            echo '- Oracle itself now owns Groww authentication, the first waiting email, 10-minute retries, PAPER startup, Market Watch startup, and the success email'
           } >> "$GITHUB_STEP_SUMMARY"
