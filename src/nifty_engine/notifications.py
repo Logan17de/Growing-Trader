@@ -57,7 +57,12 @@ def _send(subject: str, html: str) -> dict[str, Any]:
     request = Request(
         "https://api.resend.com/emails",
         data=payload,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; GrowingTrader/1.0; +https://growing-trader.vercel.app)",
+        },
         method="POST",
     )
     try:
