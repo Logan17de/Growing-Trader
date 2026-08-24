@@ -7,6 +7,8 @@ SERVICE_NAME="${GT_SERVICE_NAME:-growing-trader}"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 RETRY_SERVICE_NAME="${GT_RETRY_SERVICE_NAME:-growing-trader-market-start}"
 RETRY_SERVICE_FILE="/etc/systemd/system/${RETRY_SERVICE_NAME}.service"
+RETRY_TIMER_NAME="${GT_RETRY_TIMER_NAME:-growing-trader-market-start.timer}"
+RETRY_TIMER_FILE="/etc/systemd/system/${RETRY_TIMER_NAME}"
 RUN_USER="${GT_RUN_USER:-ubuntu}"
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
@@ -82,9 +84,27 @@ KillSignal=SIGTERM
 WantedBy=multi-user.target
 EOF
 
+sudo tee "$RETRY_TIMER_FILE" >/dev/null <<EOF
+[Unit]
+Description=Run Growing Trader autonomous market start every weekday
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:10:00 Asia/Kolkata
+Persistent=true
+Unit=${RETRY_SERVICE_NAME}.service
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
+
 sudo systemctl daemon-reload
-sudo systemctl enable "$SERVICE_NAME" "$RETRY_SERVICE_NAME"
+sudo systemctl enable "$SERVICE_NAME" "$RETRY_SERVICE_NAME" "$RETRY_TIMER_NAME"
 sudo systemctl restart "$SERVICE_NAME"
+# Run once immediately so a safe mid-session deploy can recover PAPER without waiting
+# until the next weekday timer event. autonomous_start.py still enforces its cutoff.
 sudo systemctl restart "$RETRY_SERVICE_NAME"
+sudo systemctl enable --now "$RETRY_TIMER_NAME"
 sudo systemctl --no-pager --full status "$SERVICE_NAME" || true
 sudo systemctl --no-pager --full status "$RETRY_SERVICE_NAME" || true
+sudo systemctl --no-pager --full status "$RETRY_TIMER_NAME" || true
