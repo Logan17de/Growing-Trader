@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
 from typing import Any
@@ -19,10 +19,32 @@ def _mail_config() -> tuple[str, str, str] | None:
     return key, REPORT_RECIPIENT, sender
 
 
+def _record_delivery(subject: str, sent: bool, detail: str) -> None:
+    """Persist best-effort mail delivery telemetry without affecting trading state."""
+    try:
+        from .control_plane import SupabaseControlPlane
+
+        control = SupabaseControlPlane.from_env()
+        kind = "waiting" if "waiting" in subject.lower() else "started"
+        control.client.table("activity_events").insert({
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "severity": "success" if sent else "warning",
+            "component": "notifications",
+            "event_type": f"{kind}_email_{'sent' if sent else 'failed'}",
+            "title": f"Trading engine {kind} email {'sent' if sent else 'failed'}",
+            "detail": detail[:2000],
+        }).execute()
+    except Exception:
+        # Notifications and their telemetry must never alter trading state.
+        pass
+
+
 def _send(subject: str, html: str) -> dict[str, Any]:
     config = _mail_config()
     if config is None:
-        return {"ok": False, "sent": False, "reason": "startup email configuration is incomplete"}
+        reason = "startup email configuration is incomplete"
+        _record_delivery(subject, False, reason)
+        return {"ok": False, "sent": False, "reason": reason}
 
     key, to, sender = config
     payload = json.dumps({
@@ -40,9 +62,12 @@ def _send(subject: str, html: str) -> dict[str, Any]:
     try:
         with urlopen(request, timeout=20) as response:
             body = response.read().decode()
+        _record_delivery(subject, True, body or "Resend accepted the message")
         return {"ok": True, "sent": True, "response": body}
     except Exception as exc:  # Notifications must never change trading state.
-        return {"ok": False, "sent": False, "reason": f"{type(exc).__name__}: {exc}"}
+        reason = f"{type(exc).__name__}: {exc}"
+        _record_delivery(subject, False, reason)
+        return {"ok": False, "sent": False, "reason": reason}
 
 
 def send_engine_started_email(result: dict[str, Any] | None = None) -> dict[str, Any]:
