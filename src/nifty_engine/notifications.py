@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import os
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -64,8 +65,16 @@ def _send(subject: str, html: str) -> dict[str, Any]:
             body = response.read().decode()
         _record_delivery(subject, True, body or "Resend accepted the message")
         return {"ok": True, "sent": True, "response": body}
+    except HTTPError as exc:
+        try:
+            response_body = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            response_body = ""
+        reason = f"Resend HTTP {exc.code}: {response_body or exc.reason}; from={sender}; to={to}"
+        _record_delivery(subject, False, reason)
+        return {"ok": False, "sent": False, "reason": reason}
     except Exception as exc:  # Notifications must never change trading state.
-        reason = f"{type(exc).__name__}: {exc}"
+        reason = f"{type(exc).__name__}: {exc}; from={sender}; to={to}"
         _record_delivery(subject, False, reason)
         return {"ok": False, "sent": False, "reason": reason}
 
