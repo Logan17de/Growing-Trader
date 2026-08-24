@@ -74,7 +74,7 @@ WorkingDirectory=${REPO_DIR}
 # Let the freshly restarted control agent publish its own stopped/running status
 # before the autonomous starter evaluates the persisted runtime payload.
 ExecStartPre=/bin/sleep 5
-ExecStart=/bin/bash -lc 'set -a; source "${ENV_FILE}"; set +a; exec "${REPO_DIR}/.venv/bin/python" -m nifty_engine.autonomous_start'
+ExecStart=/bin/bash -lc 'set -a; source "${ENV_FILE}"; set +a; exec "${REPO_DIR}/.venv/bin/python" -m nifty_engine.autonomous_start_runner'
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=30
