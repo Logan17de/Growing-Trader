@@ -112,18 +112,17 @@ jobs:
         if: steps.oracle.outputs.state == 'RUNNING' && steps.live.outputs.count == '0'
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          TRADING_REPORT_TO: ${{ secrets.TRADING_REPORT_TO }}
           TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
         run: |
           set -euo pipefail
-          if [[ -z "$RESEND_API_KEY" || -z "$TRADING_REPORT_TO" || -z "$TRADING_REPORT_FROM" ]]; then
+          if [[ -z "$RESEND_API_KEY" || -z "$TRADING_REPORT_FROM" ]]; then
             echo "Report email secrets are incomplete; Oracle startup emails will be skipped."
             exit 0
           fi
           python - <<'PY' > /tmp/growing-trader-mail.env
           import os
           import shlex
-          for name in ("RESEND_API_KEY", "TRADING_REPORT_TO", "TRADING_REPORT_FROM"):
+          for name in ("RESEND_API_KEY", "TRADING_REPORT_FROM"):
               print(f"{name}={shlex.quote(os.environ[name])}")
           PY
           scp -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new /tmp/growing-trader-mail.env \
