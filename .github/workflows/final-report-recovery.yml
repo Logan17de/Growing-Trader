@@ -1,0 +1,138 @@
+name: Final Report Recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/final-report-recovery.yml"
+  workflow_run:
+    workflows: ["Oracle Market Stop"]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: final-report-recovery
+  cancel-in-progress: false
+
+jobs:
+  dispatch-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - name: Resolve final-report time
+        id: timing
+        shell: bash
+        run: |
+          set -euo pipefail
+          session_date="$(TZ=Asia/Kolkata date +%F)"
+          weekday="$(TZ=Asia/Kolkata date +%u)"
+          now_epoch="$(date +%s)"
+          target_epoch="$(TZ=Asia/Kolkata date -d "${session_date} 15:45:00" +%s)"
+
+          if [ "$weekday" -gt 5 ]; then
+            echo "Weekend in IST; no trading-day final report is required."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$now_epoch" -lt "$target_epoch" ]; then
+            delay="$((target_epoch - now_epoch))"
+            echo "Market-stop completed before final-report time; waiting ${delay}s until 15:45 IST."
+            sleep "$delay"
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "session_date=$session_date" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch and verify Daily Trading Email Report
+        if: steps.timing.outputs.skip != 'true'
+        env:
+          SESSION_DATE: ${{ steps.timing.outputs.session_date }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          requested_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run daily-trading-report.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            -f session_date="$SESSION_DATE" \
+            -f send_email=true
+
+          run_id=""
+          for attempt in $(seq 1 20); do
+            run_id="$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow daily-trading-report.yml \
+              --event workflow_dispatch \
+              --limit 20 \
+              --json databaseId,createdAt \
+              --jq ".[] | select(.createdAt >= \"${requested_at}\") | .databaseId" \
+              | head -n 1)"
+            if [ -n "$run_id" ]; then
+              break
+            fi
+            sleep 3
+          done
+
+          if [ -z "$run_id" ]; then
+            echo "Could not locate the dispatched Daily Trading Email Report run." >&2
+            exit 1
+          fi
+
+          echo "REPORT_RUN_ID=$run_id" >> "$GITHUB_ENV"
+          echo "Watching Daily Trading Email Report run $run_id"
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+
+      - name: Record successful final report
+        if: success() && steps.timing.outputs.skip != 'true'
+        env:
+          SESSION_DATE: ${{ steps.timing.outputs.session_date }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y postgresql-client >/dev/null
+          fi
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -v session_date="$SESSION_DATE" -v run_id="${REPORT_RUN_ID:-unknown}" <<'SQL'
+          insert into public.activity_events(observed_at, severity, component, event_type, title, detail)
+          values (
+            now(),
+            'success',
+            'reporting',
+            'daily_report_sent',
+            'Final trading report delivered',
+            'Session ' || :'session_date' || '; GitHub report run ' || :'run_id'
+          );
+          SQL
+
+      - name: Record failed final report
+        if: failure() && steps.timing.outputs.skip != 'true'
+        env:
+          SESSION_DATE: ${{ steps.timing.outputs.session_date }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_DB_URL:-}" ]; then
+            exit 0
+          fi
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y postgresql-client >/dev/null
+          fi
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -v session_date="${SESSION_DATE:-unknown}" -v run_id="${REPORT_RUN_ID:-unknown}" <<'SQL'
+          insert into public.activity_events(observed_at, severity, component, event_type, title, detail)
+          values (
+            now(),
+            'warning',
+            'reporting',
+            'daily_report_failed',
+            'Final trading report failed',
+            'Session ' || :'session_date' || '; GitHub report run ' || :'run_id'
+          );
+          SQL
