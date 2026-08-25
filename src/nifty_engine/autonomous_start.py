@@ -11,8 +11,12 @@ from .notifications import send_engine_started_email, send_engine_waiting_email
 from .ops_automation import scheduled_start
 
 IST = ZoneInfo("Asia/Kolkata")
-MARKET_START_TIME = wall_time(9, 10)
-FINAL_START_CUTOFF = wall_time(15, 20)
+# Observation starts ten minutes before the 09:15 NSE cash session. Entry rules remain
+# independently constrained by paper_entry_window_open() and are not widened here.
+MARKET_START_TIME = wall_time(9, 5)
+# Keep recovery available until shortly before the 15:40 observation window ends. New
+# entries are already blocked after 15:15 by the trading engine.
+FINAL_START_CUTOFF = wall_time(15, 35)
 RETRY_SECONDS = 10 * 60
 RESTART_STATUS_SETTLE_SECONDS = 3.0
 
@@ -35,7 +39,7 @@ def _confirmed_runtime_running(max_age_seconds: float = 15.0) -> bool:
     """Confirm that PAPER-running status is fresh after a control-agent restart.
 
     During a service replacement, Supabase can briefly retain the previous process's
-    `running=true` payload.  Treat it as authoritative only when it remains fresh
+    `running=true` payload. Treat it as authoritative only when it remains fresh
     after a short settle period; otherwise the autonomous starter must try again.
     """
     try:
@@ -73,7 +77,7 @@ def run_autonomous_start() -> dict[str, Any]:
     """Own the weekday PAPER startup loop on Oracle itself.
 
     The VM can boot and start this service without GitHub remaining connected.
-    It waits until 09:10 IST when necessary, attempts Groww authentication and
+    It waits until 09:05 IST when necessary, attempts Groww authentication and
     PAPER startup immediately, sends one waiting email after the first failure,
     retries every ten minutes, and sends a success email once PAPER starts.
     """
@@ -123,9 +127,6 @@ def run_autonomous_start() -> dict[str, Any]:
                         "result": result,
                     }
 
-                # A newly restarted control agent can momentarily inherit the old
-                # process's `running=true` Supabase payload.  Do not exit the
-                # autonomous starter until that status is confirmed after settling.
                 if str(result.get("reason") or "") == "PAPER engine already running":
                     time.sleep(RESTART_STATUS_SETTLE_SECONDS)
                     if _confirmed_runtime_running():
