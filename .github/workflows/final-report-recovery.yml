@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/final-report-recovery.yml"
+      - ".github/final-report-recovery-trigger.txt"
   workflow_run:
     workflows: ["Oracle Market Stop"]
     types: [completed]
