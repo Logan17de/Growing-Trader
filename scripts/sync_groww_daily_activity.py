@@ -66,17 +66,32 @@ def _record(control: SupabaseControlPlane, *, ok: bool, detail: str, metadata: d
     }).execute()
 
 
+def _day_orders(groww: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    page_size = 25
+    for page in range(20):
+        response = groww.get_order_list(page=page, page_size=page_size)
+        batch = _extract_list(response, "order_list", "orders")
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+    return rows
+
+
 def main() -> int:
     control = SupabaseControlPlane.from_env()
     try:
         groww, profile = OracleControlAgent(control)._groww_client()
-        raw_orders = groww.get_order_list(page=0, page_size=100)
-        orders = [_normalize_order(row) for row in _extract_list(raw_orders, "order_list", "orders")]
+        orders = [_normalize_order(row) for row in _day_orders(groww)]
         trades: list[dict[str, Any]] = []
 
         for order in orders:
             order_id = str(order.get("groww_order_id") or "").strip()
-            if not order_id or int(order.get("filled_quantity") or 0) <= 0:
+            try:
+                filled_quantity = int(float(order.get("filled_quantity") or 0))
+            except (TypeError, ValueError):
+                filled_quantity = 0
+            if not order_id or filled_quantity <= 0:
                 continue
             declared = str(order.get("segment") or "").strip().upper()
             candidates = [declared] if declared in {"CASH", "FNO", "COMMODITY"} else ["FNO", "CASH"]
