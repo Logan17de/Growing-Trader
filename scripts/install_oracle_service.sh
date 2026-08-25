@@ -71,8 +71,6 @@ Requires=${SERVICE_NAME}.service
 Type=simple
 User=${RUN_USER}
 WorkingDirectory=${REPO_DIR}
-# Let the freshly restarted control agent publish its own stopped/running status
-# before the autonomous starter evaluates the persisted runtime payload.
 ExecStartPre=/bin/sleep 5
 ExecStart=/bin/bash -lc 'set -a; source "${ENV_FILE}"; set +a; exec "${REPO_DIR}/.venv/bin/python" -m nifty_engine.autonomous_start_runner'
 Restart=on-failure
@@ -89,7 +87,7 @@ sudo tee "$RETRY_TIMER_FILE" >/dev/null <<EOF
 Description=Run Growing Trader autonomous market start every weekday
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 09:10:00 Asia/Kolkata
+OnCalendar=Mon..Fri *-*-* 09:05:00 Asia/Kolkata
 Persistent=true
 Unit=${RETRY_SERVICE_NAME}.service
 AccuracySec=30s
