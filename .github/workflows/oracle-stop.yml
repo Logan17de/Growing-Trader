@@ -2,7 +2,7 @@ name: Oracle Market Stop
 
 on:
   schedule:
-    - cron: "25 15 * * 1-5"
+    - cron: "40 15 * * 1-5"
       timezone: "Asia/Kolkata"
   workflow_dispatch:
 
@@ -20,7 +20,7 @@ env:
 jobs:
   stop:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 18
     steps:
       - name: Install OCI CLI
         run: python -m pip install --disable-pip-version-check oci-cli
@@ -65,6 +65,18 @@ jobs:
           printf '%s\n' "$ORACLE_SSH_PRIVATE_KEY" > ~/.ssh/oracle
           chmod 600 ~/.ssh/oracle
 
+      - name: Sync Groww daily broker activity
+        if: steps.state.outputs.state == 'RUNNING'
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/oracle -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" '
+            cd /home/ubuntu/Growing-Trader
+            set -a
+            source /home/ubuntu/api.env
+            set +a
+            .venv/bin/python scripts/sync_groww_daily_activity.py
+          ' || echo "Groww daily activity sync failed; shutdown will continue safely and the failure is recorded when possible."
+
       - name: Stop Groww retry watcher
         if: steps.state.outputs.state == 'RUNNING'
         run: |
@@ -94,10 +106,9 @@ jobs:
         run: |
           {
             echo '### Oracle close automation complete'
-            echo '- Oracle stayed active until 15:25 IST, preserving a five-minute exit buffer before NSE close'
-            echo '- Groww authentication retry watcher was stopped'
-            echo '- New entries were blocked before shutdown'
-            echo '- Any managed position was required to become flat'
-            echo '- LIVE was disarmed for the next session'
-            echo '- Oracle was soft-stopped only after the safety checks passed'
+            echo '- Watcher remained available through 15:40 IST, ten minutes after NSE close'
+            echo '- Groww day orders/trade fills were synced read-only for the final report'
+            echo '- New trading entries still stop at 15:15 IST'
+            echo '- Managed positions were required to become flat before shutdown'
+            echo '- LIVE was disarmed and Oracle was soft-stopped only after safety checks passed'
           } >> "$GITHUB_STEP_SUMMARY"

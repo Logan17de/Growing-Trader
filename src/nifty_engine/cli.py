@@ -49,6 +49,14 @@ def paper_demo() -> None:
 
 
 def control_agent() -> None:
+    # The long-running Oracle watcher observes ten minutes before/after the regular
+    # NSE session. This patch is applied before trading_runner imports the function,
+    # while paper_entry_window_open() continues to enforce the narrower trade window.
+    from . import paper_runner
+    from .session_window import observation_window_open
+
+    paper_runner.is_nse_session = observation_window_open
+
     from .control_plane import SupabaseControlPlane
     from .live_control import LiveOracleControlAgent
 

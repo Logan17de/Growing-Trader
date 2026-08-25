@@ -25,7 +25,7 @@ env:
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -148,6 +148,18 @@ jobs:
                 and created_at >= ((:'session_date'::date::timestamp) at time zone 'Asia/Kolkata')
                 and created_at < (((:'session_date'::date + 1)::timestamp) at time zone 'Asia/Kolkata')
               order by completed_at desc nulls last, created_at desc limit 1), '{}'::jsonb),
+            'broker_activity', coalesce((select metadata from public.activity_events
+              where component = 'broker-sync'
+                and event_type = 'daily_broker_activity'
+                and observed_at >= ((:'session_date'::date::timestamp) at time zone 'Asia/Kolkata')
+                and observed_at < (((:'session_date'::date + 1)::timestamp) at time zone 'Asia/Kolkata')
+              order by observed_at desc limit 1), '{}'::jsonb),
+            'broker_activity_error', coalesce((select json_build_object('error', detail) from public.activity_events
+              where component = 'broker-sync'
+                and event_type = 'daily_broker_activity_failed'
+                and observed_at >= ((:'session_date'::date::timestamp) at time zone 'Asia/Kolkata')
+                and observed_at < (((:'session_date'::date + 1)::timestamp) at time zone 'Asia/Kolkata')
+              order by observed_at desc limit 1), '{}'::json),
             'lifecycle', coalesce((select json_build_object(
               'last_command', command, 'status', status, 'result', result, 'error', error,
               'created_at', created_at, 'completed_at', completed_at
@@ -174,14 +186,53 @@ jobs:
           echo "- Minute market rows: $minute_rows" >> "$GITHUB_STEP_SUMMARY"
           echo "- Market Watch rows: $watch_rows" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Generate and optionally send trading report
+      - name: Generate trading report
         if: steps.inputs.outputs.market_analysis == 'true'
+        env:
+          SESSION_DATE: ${{ steps.session.outputs.date }}
+          TRADING_REPORT_NAME: ${{ vars.TRADING_REPORT_NAME || 'Logan' }}
+        run: |
+          set -euo pipefail
+          python scripts/generate_daily_report.py --session-date "$SESSION_DATE" --input-dir report-input --output-dir daily-report
+          echo "- Market analysis available: yes" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate no-market-analysis report
+        if: steps.inputs.outputs.market_analysis != 'true'
+        env:
+          SESSION_DATE: ${{ steps.session.outputs.date }}
+          TRADING_REPORT_NAME: ${{ vars.TRADING_REPORT_NAME || 'Logan' }}
+        run: |
+          set -euo pipefail
+          mkdir -p daily-report
+          python - <<'PY'
+          import json, os
+          from datetime import datetime
+          from html import escape
+          from pathlib import Path
+          session = os.environ["SESSION_DATE"]
+          label = datetime.strptime(session, "%Y-%m-%d").strftime("%d %b %Y")
+          name = os.environ.get("TRADING_REPORT_NAME", "Logan")
+          metadata_path = Path("report-input/metadata.json")
+          metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() and metadata_path.read_text().strip() else {}
+          worker = metadata.get("worker") if isinstance(metadata.get("worker"), dict) else {}
+          last_error = str(worker.get("last_error") or "Groww authentication was not available during the market session.")
+          html = f"""<!doctype html><html><body style='margin:0;background:#f4f7fb;font-family:Arial,sans-serif;color:#172033'><div style='max-width:680px;margin:24px auto;background:white;padding:28px;border-radius:14px'><div style='font-size:22px;font-weight:800'>📊 Growing Trader</div><h1 style='font-size:24px;margin:24px 0 10px'>No market analysis today</h1><p>Hi {escape(name)},</p><p>Growing Trader did not collect enough market data on <strong>{label}</strong> for a normal Market Watch analysis.</p><p>Broker-side activity, when available, is still included in the attached PDF.</p><div style='margin-top:18px;padding:14px;background:#f5f7fa;border-radius:9px;font-size:12px'><strong>Last recorded status:</strong><br>{escape(last_error)}</div></div></body></html>"""
+          Path(f"daily-report/no-market-analysis-{session}.html").write_text(html, encoding="utf-8")
+          Path(f"daily-report/daily-report-{session}.json").write_text(json.dumps({"session_date": session, "market_analysis": False, "message": "No market analysis today", "last_error": last_error}, indent=2), encoding="utf-8")
+          PY
+          echo "- Market analysis available: no" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build complete PDF report
+        env:
+          SESSION_DATE: ${{ steps.session.outputs.date }}
+        run: python scripts/build_daily_pdf.py --session-date "$SESSION_DATE" --input-dir report-input --output-dir daily-report
+
+      - name: Send final report bundle
         env:
           SESSION_DATE: ${{ steps.session.outputs.date }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           TRADING_REPORT_TO: loganlogesh17@gmail.com
           TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
-          TRADING_REPORT_NAME: ${{ vars.TRADING_REPORT_NAME || 'Logan' }}
           MANUAL_SEND: ${{ inputs.send_email }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -190,89 +241,15 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "${MANUAL_SEND:-true}" != "true" ]; then
             send=false
           fi
-          if [ -z "${RESEND_API_KEY:-}" ] || [ -z "${TRADING_REPORT_TO:-}" ] || [ -z "${TRADING_REPORT_FROM:-}" ]; then
+          if [[ -z "${RESEND_API_KEY:-}" || -z "${TRADING_REPORT_FROM:-}" ]]; then
             send=false
-            echo "Email secrets are incomplete; report will be generated and archived without delivery." >> "$GITHUB_STEP_SUMMARY"
+            echo "Email secrets are incomplete; report was generated but not delivered." >> "$GITHUB_STEP_SUMMARY"
           fi
-          args=(--session-date "$SESSION_DATE" --input-dir report-input --output-dir daily-report)
-          if [ "$send" = true ]; then args+=(--send); fi
-          python scripts/generate_daily_report.py "${args[@]}"
-          echo "- Market analysis available: yes" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$send" = true ]; then
+            python scripts/send_daily_report_bundle.py --session-date "$SESSION_DATE" --input-dir report-input --output-dir daily-report
+          fi
           echo "- Email delivery requested: $send" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Send no-market-analysis report
-        if: steps.inputs.outputs.market_analysis != 'true'
-        env:
-          SESSION_DATE: ${{ steps.session.outputs.date }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          TRADING_REPORT_TO: loganlogesh17@gmail.com
-          TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
-          TRADING_REPORT_NAME: ${{ vars.TRADING_REPORT_NAME || 'Logan' }}
-          MANUAL_SEND: ${{ inputs.send_email }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          mkdir -p daily-report
-          python - <<'PY'
-          import json
-          import os
-          from datetime import datetime
-          from html import escape
-          from pathlib import Path
-          from urllib.request import Request, urlopen
-
-          session = os.environ["SESSION_DATE"]
-          label = datetime.strptime(session, "%Y-%m-%d").strftime("%d %b %Y")
-          name = os.environ.get("TRADING_REPORT_NAME", "Logan")
-          metadata_path = Path("report-input/metadata.json")
-          metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() and metadata_path.read_text().strip() else {}
-          worker = metadata.get("worker") if isinstance(metadata.get("worker"), dict) else {}
-          last_error = str(worker.get("last_error") or "Groww authentication was not available during the market session.")
-          html = f"""<!doctype html><html><body style='margin:0;background:#f4f7fb;font-family:Arial,sans-serif;color:#172033'>
-          <div style='max-width:680px;margin:24px auto;background:white;padding:28px;border-radius:14px'>
-            <div style='font-size:22px;font-weight:800'>📊 Growing Trader</div>
-            <h1 style='font-size:24px;margin:24px 0 10px'>No market analysis today</h1>
-            <p>Hi {escape(name)},</p>
-            <p>Growing Trader did not collect enough authenticated Groww market data on <strong>{label}</strong>, so there is no Market Watch or PAPER analysis to report.</p>
-            <p>No trading analysis has been invented or backfilled for the missing session.</p>
-            <div style='margin-top:18px;padding:14px;background:#f5f7fa;border-radius:9px;font-size:12px'><strong>Last recorded status:</strong><br>{escape(last_error)}</div>
-            <p style='margin-top:18px;color:#667085;font-size:12px'>The saved Groww credentials remain encrypted in Supabase. The next market-day startup will test them again automatically.</p>
-          </div></body></html>"""
-          Path(f"daily-report/no-market-analysis-{session}.html").write_text(html, encoding="utf-8")
-          Path(f"daily-report/daily-report-{session}.json").write_text(json.dumps({
-              "session_date": session,
-              "market_analysis": False,
-              "message": "No market analysis today",
-              "last_error": last_error,
-          }, indent=2), encoding="utf-8")
-
-          send = not (os.environ.get("EVENT_NAME") == "workflow_dispatch" and os.environ.get("MANUAL_SEND", "true") != "true")
-          key = os.environ.get("RESEND_API_KEY", "").strip()
-          to = os.environ.get("TRADING_REPORT_TO", "").strip()
-          sender = os.environ.get("TRADING_REPORT_FROM", "").strip()
-          if not send:
-              print("Manual run requested without email delivery.")
-              raise SystemExit(0)
-          if not key or not to or not sender:
-              print("Email secrets are incomplete; no-analysis report was archived without delivery.")
-              raise SystemExit(0)
-          payload = json.dumps({
-              "from": sender,
-              "to": [to],
-              "subject": f"No market analysis today — {label}",
-              "html": html,
-          }).encode()
-          req = Request(
-              "https://api.resend.com/emails",
-              data=payload,
-              headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-              method="POST",
-          )
-          with urlopen(req, timeout=20) as response:
-              print(response.read().decode())
-          PY
-          echo "- Market analysis available: no" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Sent/archived explicit 'No market analysis today' report" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Full PDF attached when delivery is enabled" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload report artifact
         if: always()
