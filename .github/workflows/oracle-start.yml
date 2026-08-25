@@ -2,7 +2,7 @@ name: Oracle Market Start
 
 on:
   schedule:
-    - cron: "10 9 * * 1-5"
+    - cron: "50 8 * * 1-5"
       timezone: "Asia/Kolkata"
   workflow_dispatch:
 
@@ -20,7 +20,7 @@ env:
 jobs:
   start:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -94,18 +94,17 @@ jobs:
       - name: Install startup email configuration on Oracle
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          TRADING_REPORT_TO: ${{ secrets.TRADING_REPORT_TO }}
           TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
         run: |
           set -euo pipefail
-          if [[ -z "$RESEND_API_KEY" || -z "$TRADING_REPORT_TO" || -z "$TRADING_REPORT_FROM" ]]; then
+          if [[ -z "$RESEND_API_KEY" || -z "$TRADING_REPORT_FROM" ]]; then
             echo "Report email secrets are incomplete; Oracle startup emails will be skipped."
             exit 0
           fi
           python - <<'PY' > /tmp/growing-trader-mail.env
           import os
           import shlex
-          for name in ("RESEND_API_KEY", "TRADING_REPORT_TO", "TRADING_REPORT_FROM"):
+          for name in ("RESEND_API_KEY", "TRADING_REPORT_FROM"):
               print(f"{name}={shlex.quote(os.environ[name])}")
           PY
           scp -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new /tmp/growing-trader-mail.env \
@@ -137,9 +136,8 @@ jobs:
         run: |
           {
             echo '### Oracle morning automation complete'
-            echo '- Supabase migrations applied'
-            echo '- OCI instance is RUNNING'
-            echo '- Oracle control agent installed/updated and enabled'
-            echo '- Oracle autonomous market-start service installed/updated, enabled, and started'
-            echo '- Oracle itself now owns Groww authentication, the first waiting email, 10-minute retries, PAPER startup, Market Watch startup, and the success email'
+            echo '- Oracle boot begins at 08:50 IST, leaving startup margin before observation'
+            echo '- Autonomous watcher timer starts at 09:05 IST (10 minutes before NSE open)'
+            echo '- Trade-entry rules remain unchanged and narrower than the watcher window'
+            echo '- Oracle owns Groww authentication, retries, PAPER startup, Market Watch, and notification emails'
           } >> "$GITHUB_STEP_SUMMARY"
