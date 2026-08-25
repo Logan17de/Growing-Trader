@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
+import threading
 from typing import Any
 
 from .instrument_registry import InstrumentRef
+
+logger = logging.getLogger(__name__)
+FEED_CLEANUP_TIMEOUT_SECONDS = 3.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,15 +76,35 @@ class GrowwLiveFeed:
         self._running = True
 
     def stop(self) -> None:
+        """Best-effort unsubscribe without ever blocking session recovery.
+
+        Groww can disconnect the socket before our cleanup runs. Synchronous
+        unsubscribe calls on that dead connection have previously stalled the
+        runtime, preventing the outer engine loop from creating a fresh feed.
+        Mark the feed stopped immediately and bound cleanup in a daemon thread.
+        """
         if not self._running:
             return
-        try:
-            self.feed.unsubscribe_ltp(self._equity_and_future)
-        finally:
+        self._running = False
+
+        def cleanup() -> None:
+            try:
+                self.feed.unsubscribe_ltp(self._equity_and_future)
+            except Exception:
+                logger.debug("Groww LTP unsubscribe failed during feed cleanup", exc_info=True)
             try:
                 self.feed.unsubscribe_index_value(self._index_request)
-            finally:
-                self._running = False
+            except Exception:
+                logger.debug("Groww index unsubscribe failed during feed cleanup", exc_info=True)
+
+        worker = threading.Thread(target=cleanup, name="groww-feed-cleanup", daemon=True)
+        worker.start()
+        worker.join(FEED_CLEANUP_TIMEOUT_SECONDS)
+        if worker.is_alive():
+            logger.warning(
+                "Groww feed cleanup exceeded %.1fs; continuing with a fresh feed",
+                FEED_CLEANUP_TIMEOUT_SECONDS,
+            )
 
     @property
     def running(self) -> bool:
