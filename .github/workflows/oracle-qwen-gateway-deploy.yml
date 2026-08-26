@@ -59,13 +59,12 @@ jobs:
           fi
           oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --wait-for-state RUNNING --max-wait-seconds 420 >/dev/null
 
-          compartment_id="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."compartment-id"' --raw-output)"
-          vnic_id="$(oci compute vnic-attachment list --compartment-id "$compartment_id" --instance-id "$OCI_INSTANCE_OCID" --query 'data[0]."vnic-id"' --raw-output)"
-          public_ip="$(oci network vnic get --vnic-id "$vnic_id" --query 'data."public-ip"' --raw-output)"
+          public_ip="$(oci compute instance list-vnics --instance-id "$OCI_INSTANCE_OCID" --query 'data[0]."public-ip"' --raw-output)"
           if [[ -z "$public_ip" || "$public_ip" == "null" ]]; then
             echo "Could not resolve the Oracle instance public IP." >&2
             exit 1
           fi
+          echo "::add-mask::$public_ip"
           echo "host=$public_ip" >> "$GITHUB_OUTPUT"
 
       - name: Configure Oracle SSH key
