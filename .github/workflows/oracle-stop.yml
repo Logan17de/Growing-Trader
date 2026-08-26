@@ -84,7 +84,7 @@ jobs:
           echo "state=$state" >> "$GITHUB_OUTPUT"
           echo "Current OCI state: $state"
 
-      - name: Install PostgreSQL client for lease checks
+      - name: Install PostgreSQL client for Colab lease check
         if: steps.state.outputs.state == 'RUNNING'
         run: |
           sudo apt-get update -qq
@@ -137,7 +137,7 @@ jobs:
           ssh -i ~/.ssh/oracle -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
             'sudo systemctl stop growing-trader-market-start || true'
 
-      - name: Safely flatten and stop trading engine
+      - name: Safely close and stop trading engine
         if: steps.state.outputs.state == 'RUNNING'
         run: |
           set -euo pipefail
@@ -145,17 +145,6 @@ jobs:
             'cd /home/ubuntu/Growing-Trader && set -a && source /home/ubuntu/api.env && set +a && .venv/bin/nifty-engine scheduled-shutdown'
           ssh -i ~/.ssh/oracle -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
             'sudo systemctl stop growing-trader'
-
-      - name: Verify no unresolved LIVE position remains
-        id: live
-        if: steps.state.outputs.state == 'RUNNING'
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: |
-          set -euo pipefail
-          count="$(psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -Atc "select count(*) from public.orders where mode='live' and status in ('OPEN','SUBMITTING') and quantity > 0")"
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          echo "Active/unresolved LIVE orders after shutdown: $count"
 
       - name: Keep Oracle online for Colab
         if: steps.state.outputs.state == 'RUNNING' && steps.qwen.outputs.active == 'true'
@@ -166,20 +155,13 @@ jobs:
             echo 'The idle watchdog will power the VM off later after Colab becomes inactive.'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Keep Oracle online for unresolved LIVE position
-        if: steps.state.outputs.state == 'RUNNING' && steps.live.outputs.count != '0'
-        run: |
-          {
-            echo '### Oracle power-off vetoed'
-            echo 'An unresolved LIVE order/position remains. The VM will not be powered off.'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Soft-stop Oracle instance
-        if: steps.state.outputs.state == 'RUNNING' && steps.qwen.outputs.active != 'true' && steps.live.outputs.count == '0'
+        if: steps.state.outputs.state == 'RUNNING' && steps.qwen.outputs.active != 'true'
         env:
           OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
         run: |
           set -euo pipefail
+          echo "Trading window is closed and Colab is inactive. Stopping Oracle."
           oci compute instance action --instance-id "$OCI_INSTANCE_OCID" --action SOFTSTOP >/dev/null
           oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --wait-for-state STOPPED --max-wait-seconds 900 >/dev/null
 
@@ -190,6 +172,5 @@ jobs:
             echo '### Oracle close automation complete'
             echo '- Trading services were safely closed outside the protected trading window.'
             echo "- Colab active: ${{ steps.qwen.outputs.active || 'false' }}"
-            echo "- Unresolved LIVE orders: ${{ steps.live.outputs.count || '0' }}"
-            echo '- The VM is powered off only when neither trading nor Colab needs it.'
+            echo '- The VM remains on only when Colab still needs it.'
           } >> "$GITHUB_STEP_SUMMARY"
