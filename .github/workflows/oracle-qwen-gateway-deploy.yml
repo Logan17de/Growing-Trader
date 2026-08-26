@@ -100,8 +100,20 @@ jobs:
       - name: Verify gateway service
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
-            'curl --fail --silent --show-error http://127.0.0.1:8788/health && echo'
+          ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" '
+            set -euo pipefail
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent --show-error http://127.0.0.1:8788/health; then
+                echo
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "Gateway did not become healthy." >&2
+            sudo systemctl --no-pager --full status qwen-api-gateway.service || true
+            sudo journalctl -u qwen-api-gateway.service --no-pager -n 80 || true
+            exit 1
+          '
 
       - name: Summary
         run: |
