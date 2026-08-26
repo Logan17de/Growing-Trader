@@ -1,1 +1,1 @@
-qwen-gateway-affinity-v6
+qwen-gateway-affinity-v7
