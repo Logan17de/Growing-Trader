@@ -55,9 +55,12 @@ jobs:
           state="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."lifecycle-state"' --raw-output)"
           echo "Current OCI state: $state"
           if [[ "$state" != "RUNNING" ]]; then
-            oci compute instance action --instance-id "$OCI_INSTANCE_OCID" --action START >/dev/null
+            oci compute instance action \
+              --instance-id "$OCI_INSTANCE_OCID" \
+              --action START \
+              --wait-for-state RUNNING \
+              --max-wait-seconds 420 >/dev/null
           fi
-          oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --wait-for-state RUNNING --max-wait-seconds 420 >/dev/null
 
       - name: Configure Oracle SSH key
         env:
