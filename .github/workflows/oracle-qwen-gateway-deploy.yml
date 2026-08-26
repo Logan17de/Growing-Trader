@@ -14,6 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  ORACLE_HOST: api.zetbros.com
   ORACLE_USER: ${{ vars.ORACLE_USER || 'ubuntu' }}
 
 jobs:
@@ -46,8 +47,7 @@ jobs:
           EOF
           chmod 600 ~/.oci/config
 
-      - name: Ensure Oracle instance is running and resolve host
-        id: instance
+      - name: Ensure Oracle instance is running
         env:
           OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
         run: |
@@ -59,14 +59,6 @@ jobs:
           fi
           oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --wait-for-state RUNNING --max-wait-seconds 420 >/dev/null
 
-          public_ip="$(oci compute instance list-vnics --instance-id "$OCI_INSTANCE_OCID" --query 'data[0]."public-ip"' --raw-output)"
-          if [[ -z "$public_ip" || "$public_ip" == "null" ]]; then
-            echo "Could not resolve the Oracle instance public IP." >&2
-            exit 1
-          fi
-          echo "::add-mask::$public_ip"
-          echo "host=$public_ip" >> "$GITHUB_OUTPUT"
-
       - name: Configure Oracle SSH key
         env:
           ORACLE_SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
@@ -77,8 +69,6 @@ jobs:
           chmod 600 ~/.ssh/oracle
 
       - name: Wait for SSH
-        env:
-          ORACLE_HOST: ${{ steps.instance.outputs.host }}
         run: |
           set -euo pipefail
           for attempt in $(seq 1 60); do
@@ -91,8 +81,6 @@ jobs:
           exit 1
 
       - name: Deploy latest Qwen gateway
-        env:
-          ORACLE_HOST: ${{ steps.instance.outputs.host }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" '
@@ -107,8 +95,6 @@ jobs:
           '
 
       - name: Verify gateway service
-        env:
-          ORACLE_HOST: ${{ steps.instance.outputs.host }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
