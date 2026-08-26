@@ -98,34 +98,19 @@ jobs:
           echo "active=$active" >> "$GITHUB_OUTPUT"
           echo "Colab active: $active"
 
-      - name: Check unresolved LIVE positions
-        id: live
-        if: steps.state.outputs.state == 'RUNNING'
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: |
-          set -euo pipefail
-          count="$(psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -Atc "select count(*) from public.orders where mode='live' and status in ('OPEN','SUBMITTING') and quantity > 0")"
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          echo "Unresolved LIVE orders: $count"
-
       - name: Soft-stop idle Oracle instance
-        if: steps.state.outputs.state == 'RUNNING' && steps.qwen.outputs.active != 'true' && steps.live.outputs.count == '0'
+        if: steps.state.outputs.state == 'RUNNING' && steps.qwen.outputs.active != 'true'
         env:
           OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
         run: |
           set -euo pipefail
-          echo "No active Colab lease, no protected trading window, and no unresolved LIVE order. Stopping Oracle."
+          echo "No protected trading window and no active Colab lease. Stopping Oracle."
           oci compute instance action --instance-id "$OCI_INSTANCE_OCID" --action SOFTSTOP >/dev/null
           oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --wait-for-state STOPPED --max-wait-seconds 900 >/dev/null
 
       - name: Keep Oracle for Colab
         if: steps.state.outputs.state == 'RUNNING' && steps.qwen.outputs.active == 'true'
         run: echo "Oracle retained because the Qwen Colab worker has a fresh heartbeat."
-
-      - name: Keep Oracle for unresolved LIVE position
-        if: steps.state.outputs.state == 'RUNNING' && steps.live.outputs.count != '0'
-        run: echo "Oracle retained because an unresolved LIVE order/position exists."
 
       - name: Summary
         if: always()
@@ -135,5 +120,4 @@ jobs:
             echo "- Trading window active: ${{ steps.trading.outputs.active || 'false' }}"
             echo "- Oracle state before decision: ${{ steps.state.outputs.state || 'not-checked' }}"
             echo "- Colab active: ${{ steps.qwen.outputs.active || 'false' }}"
-            echo "- Unresolved LIVE orders: ${{ steps.live.outputs.count || '0' }}"
           } >> "$GITHUB_STEP_SUMMARY"
