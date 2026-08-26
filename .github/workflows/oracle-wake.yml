@@ -1,0 +1,74 @@
+name: Oracle Demand Wake
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Install OCI CLI
+        run: python -m pip install --disable-pip-version-check oci-cli
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_API_PRIVATE_KEY" > ~/.oci/api_key.pem
+          chmod 600 ~/.oci/api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=${HOME}/.oci/api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+
+      - name: Ensure Oracle instance is running
+        env:
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          set -euo pipefail
+          state="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."lifecycle-state"' --raw-output)"
+          echo "Current OCI state: $state"
+          case "$state" in
+            RUNNING)
+              echo "Oracle is already running."
+              ;;
+            STARTING)
+              echo "Oracle is already starting."
+              ;;
+            *)
+              echo "Starting Oracle for Qwen/API demand..."
+              oci compute instance action --instance-id "$OCI_INSTANCE_OCID" --action START >/dev/null
+              ;;
+          esac
+          oci compute instance get \
+            --instance-id "$OCI_INSTANCE_OCID" \
+            --wait-for-state RUNNING \
+            --max-wait-seconds 420 >/dev/null
+
+      - name: Summary
+        run: |
+          {
+            echo '### Oracle demand wake complete'
+            echo '- The shared Oracle VM is RUNNING.'
+            echo '- Existing systemd services will start according to their own boot policy.'
+            echo '- This workflow does not start a trading session or place orders.'
+          } >> "$GITHUB_STEP_SUMMARY"
