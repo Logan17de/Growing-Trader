@@ -20,10 +20,10 @@ env:
 jobs:
   stop:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
-      - name: Check trading infrastructure window
-        id: trading
+      - name: Check shutdown cutoff
+        id: cutoff
         shell: bash
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
@@ -31,28 +31,26 @@ jobs:
           from zoneinfo import ZoneInfo
 
           now = datetime.now(ZoneInfo("Asia/Kolkata"))
-          # Protect the whole infrastructure window, including pre-open startup
-          # margin and the post-close watcher/report margin.
-          active = now.weekday() < 5 and time(8, 45) <= now.time() < time(15, 40)
-          print(f"active={'true' if active else 'false'}")
+          eligible = now.time() >= time(15, 40)
+          print(f"eligible={'true' if eligible else 'false'}")
           print(f"now={now.isoformat()}")
           PY
 
-      - name: Record protected trading window
-        if: steps.trading.outputs.active == 'true'
+      - name: Keep Oracle before scheduled cutoff
+        if: steps.cutoff.outputs.eligible != 'true'
         run: |
           {
             echo '### Oracle shutdown skipped'
-            echo 'The shared VM is inside the protected trading infrastructure window (08:45-15:40 Asia/Kolkata).'
-            echo 'No trading service or VM shutdown action was taken.'
+            echo 'The scheduled VM power-off cutoff is 15:40 Asia/Kolkata.'
+            echo 'Before that time the shared VM is never powered off by this workflow.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install OCI CLI
-        if: steps.trading.outputs.active != 'true'
+        if: steps.cutoff.outputs.eligible == 'true'
         run: python -m pip install --disable-pip-version-check oci-cli
 
       - name: Configure OCI authentication
-        if: steps.trading.outputs.active != 'true'
+        if: steps.cutoff.outputs.eligible == 'true'
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
           OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
@@ -74,41 +72,68 @@ jobs:
           EOF
           chmod 600 ~/.oci/config
 
-      - name: Check Oracle state
+      - name: Settle Oracle lifecycle state
         id: state
-        if: steps.trading.outputs.active != 'true'
+        if: steps.cutoff.outputs.eligible == 'true'
         env:
           OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
         run: |
-          state="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."lifecycle-state"' --raw-output)"
-          echo "state=$state" >> "$GITHUB_OUTPUT"
-          echo "Current OCI state: $state"
+          set -euo pipefail
 
-      - name: Install PostgreSQL client for Colab lease check
+          get_state() {
+            oci compute instance get \
+              --instance-id "$OCI_INSTANCE_OCID" \
+              --query 'data."lifecycle-state"' \
+              --raw-output
+          }
+
+          wait_for_state() {
+            local target="$1"
+            local timeout_seconds="$2"
+            local deadline=$((SECONDS + timeout_seconds))
+            local current
+            while (( SECONDS < deadline )); do
+              current="$(get_state)"
+              echo "OCI state while waiting for ${target}: ${current}"
+              if [[ "$current" == "$target" ]]; then
+                printf 'state=%s\n' "$current" >> "$GITHUB_OUTPUT"
+                return 0
+              fi
+              sleep 10
+            done
+            echo "Timed out waiting for Oracle to reach ${target}." >&2
+            return 1
+          }
+
+          state="$(get_state)"
+          echo "Current OCI state: $state"
+          case "$state" in
+            RUNNING|STOPPED)
+              printf 'state=%s\n' "$state" >> "$GITHUB_OUTPUT"
+              ;;
+            STARTING)
+              echo "Oracle is STARTING; wait for it to finish booting before evaluating shared-VM shutdown."
+              wait_for_state RUNNING 420
+              ;;
+            STOPPING)
+              echo "Oracle is already STOPPING; wait for the existing stop to complete."
+              wait_for_state STOPPED 900
+              ;;
+            *)
+              echo "Oracle is in unsupported lifecycle state: $state" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Record already stopped Oracle
+        if: steps.state.outputs.state == 'STOPPED'
+        run: echo "Oracle is already STOPPED; no shutdown work is needed."
+
+      - name: Install PostgreSQL client
         if: steps.state.outputs.state == 'RUNNING'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y postgresql-client
-
-      - name: Check Colab Qwen lease
-        id: qwen
-        if: steps.state.outputs.state == 'RUNNING'
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: |
-          set -euo pipefail
-          active="$(psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -Atc "
-            select exists (
-              select 1
-              from public.qwen_relay_workers
-              where relay_id = 'qwen3-8-27b'
-                and status = 'online'
-                and updated_at >= now() - interval '90 seconds'
-            );
-          ")"
-          if [[ "$active" == "t" ]]; then active=true; else active=false; fi
-          echo "active=$active" >> "$GITHUB_OUTPUT"
-          echo "Colab Qwen lease active: $active"
 
       - name: Configure Oracle SSH key
         if: steps.state.outputs.state == 'RUNNING'
@@ -118,6 +143,19 @@ jobs:
           install -d -m 700 ~/.ssh
           printf '%s\n' "$ORACLE_SSH_PRIVATE_KEY" > ~/.ssh/oracle
           chmod 600 ~/.ssh/oracle
+
+      - name: Wait for Oracle SSH
+        if: steps.state.outputs.state == 'RUNNING'
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 36); do
+            if ssh -i ~/.ssh/oracle -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" true 2>/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Oracle is RUNNING but SSH did not become available; refusing power-off." >&2
+          exit 1
 
       - name: Sync Groww daily broker activity
         if: steps.state.outputs.state == 'RUNNING'
@@ -129,7 +167,7 @@ jobs:
             source /home/ubuntu/api.env
             set +a
             .venv/bin/python scripts/sync_groww_daily_activity.py
-          ' || echo "Groww daily activity sync failed; shutdown will continue safely and the failure is recorded when possible."
+          ' || echo "Groww daily activity sync failed; safe shutdown checks will still run."
 
       - name: Stop Groww retry watcher
         if: steps.state.outputs.state == 'RUNNING'
@@ -146,31 +184,47 @@ jobs:
           ssh -i ~/.ssh/oracle -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" \
             'sudo systemctl stop growing-trader'
 
-      - name: Keep Oracle online for Colab
-        if: steps.state.outputs.state == 'RUNNING' && steps.qwen.outputs.active == 'true'
-        run: |
-          {
-            echo '### Trading stopped; Oracle remains online'
-            echo 'The Colab Qwen worker has a fresh Supabase heartbeat, so the VM is being retained for api.zetbros.com.'
-            echo 'The idle watchdog will power the VM off later after Colab becomes inactive.'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Soft-stop Oracle instance
-        if: steps.state.outputs.state == 'RUNNING' && steps.qwen.outputs.active != 'true'
+      - name: Stop Oracle only when Colab is still inactive
+        id: power
+        if: steps.state.outputs.state == 'RUNNING'
         env:
           OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           set -euo pipefail
-          echo "Trading window is closed and Colab is inactive. Stopping Oracle."
-          oci compute instance action --instance-id "$OCI_INSTANCE_OCID" --action SOFTSTOP >/dev/null
-          oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --wait-for-state STOPPED --max-wait-seconds 900 >/dev/null
+          active="$(psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -Atc "
+            select exists (
+              select 1
+              from public.qwen_relay_workers
+              where relay_id = 'qwen3-8-27b'
+                and status = 'online'
+                and updated_at >= now() - interval '90 seconds'
+            );
+          ")"
+
+          if [[ "$active" == "t" ]]; then
+            echo "colab_active=true" >> "$GITHUB_OUTPUT"
+            echo "Colab has a fresh lease. Trading is stopped safely, but Oracle stays RUNNING."
+            exit 0
+          fi
+
+          echo "colab_active=false" >> "$GITHUB_OUTPUT"
+          echo "Cutoff passed, trading is safely stopped, and Colab is inactive. Soft-stopping Oracle."
+          oci compute instance action \
+            --instance-id "$OCI_INSTANCE_OCID" \
+            --action SOFTSTOP \
+            --wait-for-state STOPPED \
+            --max-wait-seconds 900 \
+            --wait-interval-seconds 10 >/dev/null
+          echo "Oracle is STOPPED."
 
       - name: Summary
-        if: success() && steps.trading.outputs.active != 'true'
+        if: always()
         run: |
           {
-            echo '### Oracle close automation complete'
-            echo '- Trading services were safely closed outside the protected trading window.'
-            echo "- Colab active: ${{ steps.qwen.outputs.active || 'false' }}"
-            echo '- The VM remains on only when Colab still needs it.'
+            echo '### Oracle close automation'
+            echo "- Past 15:40 IST cutoff: ${{ steps.cutoff.outputs.eligible || 'false' }}"
+            echo "- Oracle settled state: ${{ steps.state.outputs.state || 'not-checked' }}"
+            echo "- Colab active at final power decision: ${{ steps.power.outputs.colab_active || 'not-checked' }}"
+            echo '- VM power-off requires the cutoff, a safe trading shutdown, and no fresh Colab lease.'
           } >> "$GITHUB_STEP_SUMMARY"
