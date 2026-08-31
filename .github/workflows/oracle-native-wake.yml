@@ -55,6 +55,28 @@ jobs:
             --raw-output)"
           resources="$(python -c 'import json,os; print(json.dumps([{"id": os.environ["OCI_INSTANCE_OCID"]}]))')"
 
+          schedule_state() {
+            oci resource-scheduler schedule get \
+              --schedule-id "$1" \
+              --query 'data."lifecycle-state"' \
+              --raw-output
+          }
+
+          wait_until_settled() {
+            local schedule_id="$1"
+            local state=""
+            for attempt in $(seq 1 60); do
+              state="$(schedule_state "$schedule_id")"
+              case "$state" in
+                ACTIVE|INACTIVE) echo "$state"; return 0 ;;
+                FAILED) echo "OCI Resource Scheduler entered FAILED state" >&2; return 1 ;;
+                *) sleep 2 ;;
+              esac
+            done
+            echo "Timed out waiting for OCI Resource Scheduler to settle" >&2
+            return 1
+          }
+
           upsert_schedule() {
             local name="$1"
             local cron="$2"
@@ -76,6 +98,8 @@ jobs:
           ' <<<"$existing_json")"
 
             if [[ -n "$schedule_id" && "$schedule_id" != "null" ]]; then
+              echo "Found existing OCI schedule $name: $schedule_id"
+              wait_until_settled "$schedule_id" >/dev/null
               echo "Updating OCI Resource Scheduler schedule: $name"
               oci resource-scheduler schedule update \
                 --schedule-id "$schedule_id" \
@@ -88,6 +112,8 @@ jobs:
                 --max-wait-seconds 300 >/dev/null
             else
               echo "Creating OCI Resource Scheduler schedule: $name"
+              # Without a work-request waiter, create returns the schedule object and
+              # data.id is the actual schedule OCID (not a work-request OCID).
               schedule_id="$(oci resource-scheduler schedule create \
                 --action START_RESOURCE \
                 --compartment-id "$compartment_id" \
@@ -96,22 +122,23 @@ jobs:
                 --display-name "$name" \
                 --description "$description" \
                 --resources "$resources" \
-                --wait-for-state SUCCEEDED \
-                --max-wait-seconds 300 \
                 --query 'data.id' \
                 --raw-output)"
             fi
 
-            state="$(oci resource-scheduler schedule get \
-              --schedule-id "$schedule_id" \
-              --query 'data."lifecycle-state"' \
-              --raw-output)"
+            state="$(wait_until_settled "$schedule_id")"
             if [[ "$state" != "ACTIVE" ]]; then
               echo "Activating OCI schedule $name (current state: $state)"
               oci resource-scheduler schedule activate \
                 --schedule-id "$schedule_id" \
                 --wait-for-state ACTIVE \
                 --max-wait-seconds 300 >/dev/null
+            fi
+
+            state="$(schedule_state "$schedule_id")"
+            if [[ "$state" != "ACTIVE" ]]; then
+              echo "OCI schedule $name is not ACTIVE after provisioning: $state" >&2
+              exit 1
             fi
 
             oci resource-scheduler schedule get \
