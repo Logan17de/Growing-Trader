@@ -108,6 +108,7 @@ jobs:
                 --recurrence-details "$cron" \
                 --resources "$resources" \
                 --description "$description" \
+                --force \
                 --wait-for-state SUCCEEDED \
                 --max-wait-seconds 300 >/dev/null
             else
