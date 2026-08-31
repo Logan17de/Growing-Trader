@@ -1,0 +1,143 @@
+name: Provision OCI Native Market Wake
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/oracle-native-wake.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-native-wake-provision
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Install OCI CLI
+        run: python -m pip install --disable-pip-version-check oci-cli
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_API_PRIVATE_KEY" > ~/.oci/api_key.pem
+          chmod 600 ~/.oci/api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=${HOME}/.oci/api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+
+      - name: Create or update OCI-native wake schedules
+        env:
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          set -euo pipefail
+
+          compartment_id="$(oci compute instance get \
+            --instance-id "$OCI_INSTANCE_OCID" \
+            --query 'data."compartment-id"' \
+            --raw-output)"
+          resources="$(python -c 'import json,os; print(json.dumps([{"id": os.environ["OCI_INSTANCE_OCID"]}]))')"
+
+          upsert_schedule() {
+            local name="$1"
+            local cron="$2"
+            local description="$3"
+            local existing_json schedule_id state
+
+            existing_json="$(oci resource-scheduler schedule list \
+              --compartment-id "$compartment_id" \
+              --display-name "$name" \
+              --all \
+              --output json)"
+
+            schedule_id="$(python -c '
+          import json, sys
+          payload = json.load(sys.stdin).get("data", [])
+          if isinstance(payload, dict):
+              payload = payload.get("items", [])
+          print(payload[0].get("id", "") if payload else "")
+          ' <<<"$existing_json")"
+
+            if [[ -n "$schedule_id" && "$schedule_id" != "null" ]]; then
+              echo "Updating OCI Resource Scheduler schedule: $name"
+              oci resource-scheduler schedule update \
+                --schedule-id "$schedule_id" \
+                --action START_RESOURCE \
+                --recurrence-type CRON \
+                --recurrence-details "$cron" \
+                --resources "$resources" \
+                --description "$description" \
+                --wait-for-state SUCCEEDED \
+                --max-wait-seconds 300 >/dev/null
+            else
+              echo "Creating OCI Resource Scheduler schedule: $name"
+              schedule_id="$(oci resource-scheduler schedule create \
+                --action START_RESOURCE \
+                --compartment-id "$compartment_id" \
+                --recurrence-type CRON \
+                --recurrence-details "$cron" \
+                --display-name "$name" \
+                --description "$description" \
+                --resources "$resources" \
+                --wait-for-state SUCCEEDED \
+                --max-wait-seconds 300 \
+                --query 'data.id' \
+                --raw-output)"
+            fi
+
+            state="$(oci resource-scheduler schedule get \
+              --schedule-id "$schedule_id" \
+              --query 'data."lifecycle-state"' \
+              --raw-output)"
+            if [[ "$state" != "ACTIVE" ]]; then
+              echo "Activating OCI schedule $name (current state: $state)"
+              oci resource-scheduler schedule activate \
+                --schedule-id "$schedule_id" \
+                --wait-for-state ACTIVE \
+                --max-wait-seconds 300 >/dev/null
+            fi
+
+            oci resource-scheduler schedule get \
+              --schedule-id "$schedule_id" \
+              --query 'data.{name:"display-name",state:"lifecycle-state",action:action,recurrence:"recurrence-details",next:"time-next-execution"}' \
+              --output table
+          }
+
+          # Resource Scheduler cron is UTC. 03:00 UTC = 08:30 IST; 03:20 UTC = 08:50 IST.
+          # The first wake is primary. The second is an independent guard before the 09:05 watcher.
+          upsert_schedule \
+            "GrowingTrader-Weekday-Wake-0830-IST" \
+            "0 3 * * 1-5" \
+            "Primary weekday wake for the shared Oracle VM before Growing Trader market observation."
+
+          upsert_schedule \
+            "GrowingTrader-Weekday-Wake-0850-IST" \
+            "20 3 * * 1-5" \
+            "Guard weekday wake for the shared Oracle VM before the 09:05 IST Growing Trader watcher."
+
+      - name: Summary
+        run: |
+          {
+            echo '### OCI-native market wake provisioned'
+            echo '- Primary wake: 08:30 IST weekdays (03:00 UTC)'
+            echo '- Guard wake: 08:50 IST weekdays (03:20 UTC)'
+            echo '- GitHub Oracle Market Start remains a fallback, not the primary market clock.'
+            echo '- No STOP_RESOURCE schedule is created; conditional shared-VM shutdown remains managed separately.'
+          } >> "$GITHUB_STEP_SUMMARY"
