@@ -1,0 +1,91 @@
+name: Install Oracle Pre-open Auth Timer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/oracle-preopen-auth-install.yml"
+      - "src/nifty_engine/preopen_auth.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-preopen-auth-install
+  cancel-in-progress: false
+
+env:
+  ORACLE_HOST: ${{ vars.ORACLE_HOST || '193.123.166.128' }}
+  ORACLE_USER: ${{ vars.ORACLE_USER || 'ubuntu' }}
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Configure Oracle SSH key
+        env:
+          ORACLE_SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$ORACLE_SSH_PRIVATE_KEY" > ~/.ssh/oracle
+          chmod 600 ~/.ssh/oracle
+
+      - name: Wait for Oracle SSH
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 18); do
+            if ssh -i ~/.ssh/oracle -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" true 2>/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Oracle SSH did not become ready" >&2
+          exit 1
+
+      - name: Install pre-open authorization service and timer
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" 'sudo tee /etc/systemd/system/growing-trader-preopen-auth.service >/dev/null <<"EOF"
+          [Unit]
+          Description=Growing Trader Pre-open Groww Authorization Check
+          Wants=network-online.target
+          After=network-online.target growing-trader.service
+          Requires=growing-trader.service
+
+          [Service]
+          Type=oneshot
+          User=ubuntu
+          WorkingDirectory=/home/ubuntu/Growing-Trader
+          ExecStart=/bin/bash -lc '\''set -a; source /home/ubuntu/api.env; set +a; exec /home/ubuntu/Growing-Trader/.venv/bin/python -m nifty_engine.preopen_auth'\''
+          TimeoutStartSec=180
+          EOF
+
+          sudo tee /etc/systemd/system/growing-trader-preopen-auth.timer >/dev/null <<"EOF"
+          [Unit]
+          Description=Check Groww authorization before the weekday market session
+
+          [Timer]
+          OnCalendar=Mon..Fri *-*-* 08:45:00 Asia/Kolkata
+          Persistent=true
+          Unit=growing-trader-preopen-auth.service
+          AccuracySec=30s
+
+          [Install]
+          WantedBy=timers.target
+          EOF
+
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now growing-trader-preopen-auth.timer
+          sudo systemctl --no-pager --full status growing-trader-preopen-auth.timer || true
+          sudo systemctl list-timers growing-trader-preopen-auth.timer --no-pager'
+
+      - name: Summary
+        run: |
+          {
+            echo '### Pre-open Groww authorization check installed'
+            echo '- Oracle checks the already-saved Groww credentials at 08:45 IST weekdays.'
+            echo '- It never starts trading or places orders.'
+            echo '- On authorization failure it sends the existing Growing Trader waiting email before the 09:05 market watcher start.'
+          } >> "$GITHUB_STEP_SUMMARY"
