@@ -45,24 +45,71 @@ jobs:
           OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
         run: |
           set -euo pipefail
-          state="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."lifecycle-state"' --raw-output)"
+
+          get_state() {
+            oci compute instance get \
+              --instance-id "$OCI_INSTANCE_OCID" \
+              --query 'data."lifecycle-state"' \
+              --raw-output
+          }
+
+          wait_for_state() {
+            local target="$1"
+            local timeout_seconds="$2"
+            local deadline=$((SECONDS + timeout_seconds))
+            local current
+            while (( SECONDS < deadline )); do
+              current="$(get_state)"
+              echo "OCI state while waiting for ${target}: ${current}"
+              if [[ "$current" == "$target" ]]; then
+                return 0
+              fi
+              sleep 10
+            done
+            echo "Timed out waiting for Oracle to reach ${target}." >&2
+            return 1
+          }
+
+          start_and_wait() {
+            oci compute instance action \
+              --instance-id "$OCI_INSTANCE_OCID" \
+              --action START \
+              --wait-for-state RUNNING \
+              --max-wait-seconds 420 \
+              --wait-interval-seconds 10 >/dev/null
+          }
+
+          state="$(get_state)"
           echo "Current OCI state: $state"
           case "$state" in
             RUNNING)
               echo "Oracle is already running."
               ;;
             STARTING)
-              echo "Oracle is already starting."
+              echo "Oracle is already starting; waiting for RUNNING."
+              wait_for_state RUNNING 420
+              ;;
+            STOPPED)
+              echo "Starting Oracle for shared VM demand..."
+              start_and_wait
+              ;;
+            STOPPING)
+              echo "Oracle is stopping; waiting for STOPPED before restarting."
+              wait_for_state STOPPED 900
+              start_and_wait
               ;;
             *)
-              echo "Starting Oracle for Qwen/API demand..."
-              oci compute instance action --instance-id "$OCI_INSTANCE_OCID" --action START >/dev/null
+              echo "Oracle is in unsupported lifecycle state: $state" >&2
+              exit 1
               ;;
           esac
-          oci compute instance get \
-            --instance-id "$OCI_INSTANCE_OCID" \
-            --wait-for-state RUNNING \
-            --max-wait-seconds 420 >/dev/null
+
+          final_state="$(get_state)"
+          [[ "$final_state" == "RUNNING" ]] || {
+            echo "Oracle did not reach RUNNING; final state: $final_state" >&2
+            exit 1
+          }
+          echo "Oracle is RUNNING."
 
       - name: Summary
         run: |
