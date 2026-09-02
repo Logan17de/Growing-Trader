@@ -1,0 +1,160 @@
+name: Provision OCI Market Wake IAM
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/oracle-resource-scheduler-iam.yml"
+  workflow_run:
+    workflows: ["Provision OCI Native Market Wake"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-resource-scheduler-iam
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install OCI CLI
+        run: python -m pip install --disable-pip-version-check oci-cli
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_API_PRIVATE_KEY" > ~/.oci/api_key.pem
+          chmod 600 ~/.oci/api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=${HOME}/.oci/api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+
+      - name: Grant only the wake schedules instance power access
+        env:
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          set -euo pipefail
+          policy_name="GrowingTraderResourceSchedulerWake"
+          compartment_id="$(oci compute instance get \
+            --instance-id "$OCI_INSTANCE_OCID" \
+            --query 'data."compartment-id"' \
+            --raw-output)"
+
+          resolve_schedule() {
+            local name="$1"
+            local json_file
+            json_file="$(mktemp)"
+            oci resource-scheduler schedule list \
+              --compartment-id "$compartment_id" \
+              --display-name "$name" \
+              --all \
+              --output json > "$json_file"
+            python - "$json_file" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1])).get('data', [])
+          if isinstance(data, dict):
+              data = data.get('items', [])
+          active = [x for x in data if x.get('lifecycle-state') == 'ACTIVE']
+          chosen = active[0] if active else (data[0] if data else {})
+          print(chosen.get('id', ''))
+          PY
+            rm -f "$json_file"
+          }
+
+          wake_0830="$(resolve_schedule GrowingTrader-Weekday-Wake-0830-IST)"
+          wake_0850="$(resolve_schedule GrowingTrader-Weekday-Wake-0850-IST)"
+          if [[ -z "$wake_0830" || -z "$wake_0850" ]]; then
+            echo "Could not resolve both OCI wake schedule OCIDs" >&2
+            exit 1
+          fi
+
+          python - "$compartment_id" "$wake_0830" "$wake_0850" <<'PY' > /tmp/statements.json
+          import json, sys
+          compartment, wake_0830, wake_0850 = sys.argv[1:]
+          def statement(schedule_id):
+              return (
+                  f"Allow any-user to use instances in compartment id {compartment} "
+                  f"where all {{request.principal.type='resourceschedule',"
+                  f"request.principal.id='{schedule_id}'}}"
+              )
+          print(json.dumps([statement(wake_0830), statement(wake_0850)]))
+          PY
+
+          oci iam policy list \
+            --compartment-id "$compartment_id" \
+            --all \
+            --output json > /tmp/policies.json
+          policy_id="$(python - /tmp/policies.json "$policy_name" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1])).get('data', [])
+          name = sys.argv[2]
+          matches = [p for p in data if p.get('name') == name and p.get('lifecycle-state') != 'DELETED']
+          print(matches[0].get('id', '') if matches else '')
+          PY
+          )"
+
+          if [[ -n "$policy_id" ]]; then
+            echo "Updating existing least-privilege wake policy"
+            oci iam policy update \
+              --policy-id "$policy_id" \
+              --statements file:///tmp/statements.json \
+              --description "Allows only the two Growing Trader Resource Scheduler principals to perform Compute instance power actions in this compartment." \
+              --force >/dev/null
+          else
+            echo "Creating least-privilege wake policy"
+            policy_id="$(oci iam policy create \
+              --compartment-id "$compartment_id" \
+              --name "$policy_name" \
+              --description "Allows only the two Growing Trader Resource Scheduler principals to perform Compute instance power actions in this compartment." \
+              --statements file:///tmp/statements.json \
+              --wait-for-state ACTIVE \
+              --query 'data.id' \
+              --raw-output)"
+          fi
+
+          # IAM changes typically take effect within seconds. Re-read the policy and
+          # verify that it contains exactly the two generated statements.
+          sleep 12
+          oci iam policy get --policy-id "$policy_id" --output json > /tmp/policy.json
+          python - /tmp/policy.json /tmp/statements.json <<'PY'
+          import json, sys
+          policy = json.load(open(sys.argv[1])).get('data', {})
+          expected = json.load(open(sys.argv[2]))
+          actual = policy.get('statements') or []
+          print(json.dumps({
+              'name': policy.get('name'),
+              'state': policy.get('lifecycle-state'),
+              'statement_count': len(actual),
+          }, indent=2))
+          if policy.get('lifecycle-state') != 'ACTIVE':
+              raise SystemExit('Wake IAM policy is not ACTIVE')
+          if actual != expected:
+              raise SystemExit('Wake IAM policy statements do not match the two expected schedule principals')
+          PY
+
+      - name: Summary
+        run: |
+          {
+            echo '### OCI market-wake IAM provisioned'
+            echo '- Exactly two Resource Scheduler principals are authorized: the 08:30 and 08:50 weekday wake schedules.'
+            echo '- Permission is `use instances`, which covers Compute power actions without granting instance create/delete rights.'
+            echo '- Scope is the Oracle VM compartment, not the tenancy.'
+          } >> "$GITHUB_STEP_SUMMARY"
