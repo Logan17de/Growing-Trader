@@ -44,7 +44,7 @@ jobs:
           echo "Oracle SSH did not become ready" >&2
           exit 1
 
-      - name: Install pre-open authorization service and timer
+      - name: Install and verify pre-open authorization timer
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" 'sudo tee /etc/systemd/system/growing-trader-preopen-auth.service >/dev/null <<"EOF"
@@ -77,15 +77,29 @@ jobs:
           EOF
 
           sudo systemctl daemon-reload
+          sudo systemd-analyze calendar "Mon..Fri *-*-* 08:45:00 Asia/Kolkata"
           sudo systemctl enable --now growing-trader-preopen-auth.timer
+          sudo systemctl is-enabled growing-trader-preopen-auth.timer
+          sudo systemctl is-active growing-trader-preopen-auth.timer
+
+          next="$(sudo systemctl show growing-trader-preopen-auth.timer -p NextElapseUSecRealtime --value)"
+          last="$(sudo systemctl show growing-trader-preopen-auth.timer -p LastTriggerUSec --value)"
+          echo "Pre-open timer last trigger: ${last:-none}"
+          echo "Pre-open timer next trigger: ${next:-none}"
+          if [[ -z "$next" || "$next" == "n/a" ]]; then
+            echo "Pre-open auth timer has no next trigger" >&2
+            exit 1
+          fi
+
           sudo systemctl --no-pager --full status growing-trader-preopen-auth.timer || true
           sudo systemctl list-timers growing-trader-preopen-auth.timer --no-pager'
 
       - name: Summary
         run: |
           {
-            echo '### Pre-open Groww authorization check installed'
+            echo '### Pre-open Groww authorization check verified'
             echo '- Oracle checks the already-saved Groww credentials at 08:45 IST weekdays.'
+            echo '- systemd must report the timer enabled, active, and with a real next trigger.'
             echo '- It never starts trading or places orders.'
             echo '- On authorization failure it sends the existing Growing Trader waiting email before the 09:05 market watcher start.'
           } >> "$GITHUB_STEP_SUMMARY"
