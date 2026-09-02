@@ -86,8 +86,6 @@ jobs:
             local json_file
             json_file="$(mktemp)"
 
-            # time-next-run is the actual Resource Scheduler field. Poll briefly because
-            # OCI may populate it just after an update/activation work request settles.
             for attempt in $(seq 1 20); do
               oci resource-scheduler schedule get \
                 --schedule-id "$schedule_id" \
@@ -137,20 +135,15 @@ jobs:
           if instance_id not in resource_ids:
               problems.append("target Oracle instance is missing from resources")
 
-          print(
-              json.dumps(
-                  {
-                      "name": d.get("display-name"),
-                      "state": d.get("lifecycle-state"),
-                      "cron": d.get("recurrence-details"),
-                      "time_zone": d.get("local-time-zone"),
-                      "last_run": d.get("time-last-run"),
-                      "last_run_status": d.get("last-run-status"),
-                      "next_run": d.get("time-next-run"),
-                  },
-                  indent=2,
-              )
-          )
+          print(json.dumps({
+              "name": d.get("display-name"),
+              "state": d.get("lifecycle-state"),
+              "cron": d.get("recurrence-details"),
+              "time_zone": d.get("local-time-zone"),
+              "last_run": d.get("time-last-run"),
+              "last_run_status": d.get("last-run-status"),
+              "next_run": d.get("time-next-run"),
+          }, indent=2))
           if problems:
               raise SystemExit("Invalid OCI wake schedule: " + "; ".join(problems))
           PY
@@ -221,8 +214,6 @@ jobs:
             validate_schedule "$schedule_id" "$name" "$cron" "$expected_hour" "$expected_minute"
           }
 
-          # Resource Scheduler uses UTC. Use the weekday spelling from Oracle's
-          # documented cron examples and verify the actual computed next run.
           upsert_schedule \
             "GrowingTrader-Weekday-Wake-0830-IST" \
             "0 3 * * mon-fri" \
@@ -237,6 +228,56 @@ jobs:
             "20" \
             "Guard weekday wake for the shared Oracle VM before the 09:05 IST Growing Trader watcher."
 
+      - name: Diagnose failed OCI wake executions
+        env:
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          set -euo pipefail
+          compartment_id="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."compartment-id"' --raw-output)"
+
+          for name in GrowingTrader-Weekday-Wake-0830-IST GrowingTrader-Weekday-Wake-0850-IST; do
+            sid="$(oci resource-scheduler schedule list \
+              --compartment-id "$compartment_id" \
+              --display-name "$name" \
+              --all \
+              --query 'data[0].id' \
+              --raw-output)"
+            echo "=== Recent failed Resource Scheduler work requests for $name ==="
+            oci resource-scheduler work-request list \
+              --compartment-id "$compartment_id" \
+              --schedule-id "$sid" \
+              --status FAILED \
+              --limit 5 \
+              --sort-by timeAccepted \
+              --sort-order DESC \
+              --output json > /tmp/failed-wr.json
+            cat /tmp/failed-wr.json
+
+            python - /tmp/failed-wr.json <<'PY' > /tmp/failed-wr-ids
+          import json, sys
+          data = json.load(open(sys.argv[1])).get("data", [])
+          if isinstance(data, dict):
+              data = data.get("items", [])
+          for item in data:
+              if item.get("id"):
+                  print(item["id"])
+          PY
+
+            while IFS= read -r wr; do
+              [[ -n "$wr" ]] || continue
+              echo "--- Errors for $wr ---"
+              oci resource-scheduler work-request-error list \
+                --work-request-id "$wr" \
+                --all \
+                --output json || true
+              echo "--- Logs for $wr ---"
+              oci resource-scheduler work-request-log-entry list-work-request-logs \
+                --work-request-id "$wr" \
+                --all \
+                --output json || true
+            done < /tmp/failed-wr-ids
+          done
+
       - name: Summary
         run: |
           {
@@ -244,5 +285,6 @@ jobs:
             echo '- Primary wake: 08:30 IST weekdays (03:00 UTC)'
             echo '- Guard wake: 08:50 IST weekdays (03:20 UTC)'
             echo '- Each schedule must be ACTIVE and expose a real time-next-run matching its UTC clock time.'
+            echo '- Failed execution work requests are printed so permission/resource errors cannot be hidden behind ACTIVE schedule state.'
             echo '- GitHub Oracle Market Start remains a fallback, not the primary market clock.'
           } >> "$GITHUB_STEP_SUMMARY"
