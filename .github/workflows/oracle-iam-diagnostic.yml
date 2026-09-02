@@ -1,0 +1,66 @@
+name: Inspect OCI Resource Scheduler IAM
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/oracle-iam-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Install OCI CLI
+        run: python -m pip install --disable-pip-version-check oci-cli
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_API_PRIVATE_KEY" > ~/.oci/api_key.pem
+          chmod 600 ~/.oci/api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=${HOME}/.oci/api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+
+      - name: Inspect policies relevant to Resource Scheduler
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          set -euo pipefail
+          compartment_id="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."compartment-id"' --raw-output)"
+          echo "Target compartment: $compartment_id"
+
+          oci iam policy list --compartment-id "$OCI_TENANCY_OCID" --all --output json > /tmp/root-policies.json
+          python - /tmp/root-policies.json <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1])).get('data', [])
+          found = False
+          for policy in data:
+              statements = policy.get('statements') or []
+              hits = [s for s in statements if 'resourceschedule' in s.lower() or 'resource-schedule' in s.lower()]
+              if hits:
+                  found = True
+                  print(f"POLICY {policy.get('name')} [{policy.get('lifecycle-state')}]")
+                  for s in hits:
+                      print('  ' + s)
+          if not found:
+              print('NO_ROOT_RESOURCE_SCHEDULER_POLICY_STATEMENTS_FOUND')
+          PY
