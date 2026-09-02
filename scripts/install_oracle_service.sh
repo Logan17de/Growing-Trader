@@ -77,9 +77,6 @@ Restart=on-failure
 RestartSec=30
 TimeoutStopSec=30
 KillSignal=SIGTERM
-
-[Install]
-WantedBy=multi-user.target
 EOF
 
 sudo tee "$RETRY_TIMER_FILE" >/dev/null <<EOF
@@ -97,12 +94,25 @@ WantedBy=timers.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable "$SERVICE_NAME" "$RETRY_SERVICE_NAME" "$RETRY_TIMER_NAME"
+
+# The control agent is a normal boot service. The autonomous market-start runner is
+# intentionally timer-only: it must never be pulled into multi-user.target and must
+# never be restarted merely because code was deployed or the VM booted.
+sudo systemctl enable "$SERVICE_NAME" "$RETRY_TIMER_NAME"
+sudo systemctl disable "$RETRY_SERVICE_NAME" >/dev/null 2>&1 || true
 sudo systemctl restart "$SERVICE_NAME"
-# Run once immediately so a safe mid-session deploy can recover PAPER without waiting
-# until the next weekday timer event. autonomous_start.py still enforces its cutoff.
-sudo systemctl restart "$RETRY_SERVICE_NAME"
 sudo systemctl enable --now "$RETRY_TIMER_NAME"
+
+# Verify the timer is the only automatic activation path for market-start.
+if sudo systemctl is-enabled "$RETRY_SERVICE_NAME" >/dev/null 2>&1; then
+  echo "${RETRY_SERVICE_NAME} must not be enabled as a standalone boot service" >&2
+  exit 1
+fi
+sudo systemctl is-enabled "$RETRY_TIMER_NAME"
+sudo systemctl is-active "$RETRY_TIMER_NAME"
+
 sudo systemctl --no-pager --full status "$SERVICE_NAME" || true
+# The market-start service is normally inactive until the 09:05 timer fires.
 sudo systemctl --no-pager --full status "$RETRY_SERVICE_NAME" || true
 sudo systemctl --no-pager --full status "$RETRY_TIMER_NAME" || true
+sudo systemctl list-timers "$RETRY_TIMER_NAME" --no-pager
