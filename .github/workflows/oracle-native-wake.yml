@@ -77,10 +77,89 @@ jobs:
             return 1
           }
 
+          validate_schedule() {
+            local schedule_id="$1"
+            local expected_name="$2"
+            local expected_cron="$3"
+            local expected_hour="$4"
+            local expected_minute="$5"
+            local json_file
+            json_file="$(mktemp)"
+
+            # OCI may populate time-next-run shortly after the work request settles.
+            for attempt in $(seq 1 20); do
+              oci resource-scheduler schedule get \
+                --schedule-id "$schedule_id" \
+                --output json > "$json_file"
+              if python - "$json_file" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1])).get("data", {})
+          raise SystemExit(0 if d.get("time-next-run") else 1)
+          PY
+              then
+                break
+              fi
+              sleep 2
+            done
+
+            python - "$json_file" "$expected_name" "$expected_cron" "$expected_hour" "$expected_minute" "$OCI_INSTANCE_OCID" <<'PY'
+          import json
+          import sys
+          from datetime import datetime
+
+          path, expected_name, expected_cron, expected_hour, expected_minute, instance_id = sys.argv[1:]
+          d = json.load(open(path)).get("data", {})
+          problems = []
+
+          if d.get("display-name") != expected_name:
+              problems.append(f"name={d.get('display-name')!r}")
+          if d.get("lifecycle-state") != "ACTIVE":
+              problems.append(f"state={d.get('lifecycle-state')!r}")
+          if d.get("action") != "START_RESOURCE":
+              problems.append(f"action={d.get('action')!r}")
+          if d.get("recurrence-type") != "CRON":
+              problems.append(f"recurrence_type={d.get('recurrence-type')!r}")
+          if d.get("recurrence-details") != expected_cron:
+              problems.append(f"recurrence={d.get('recurrence-details')!r}")
+          if d.get("local-time-zone") != "UTC":
+              problems.append(f"time_zone={d.get('local-time-zone')!r}")
+
+          next_run = d.get("time-next-run")
+          if not next_run:
+              problems.append("time-next-run is missing")
+          else:
+              dt = datetime.fromisoformat(next_run.replace("Z", "+00:00"))
+              if (dt.hour, dt.minute) != (int(expected_hour), int(expected_minute)):
+                  problems.append(f"next_run={next_run!r} does not match {expected_hour}:{expected_minute} UTC")
+              if dt.weekday() >= 5:
+                  problems.append(f"next_run={next_run!r} is not a weekday")
+
+          resource_ids = {item.get("id") for item in (d.get("resources") or [])}
+          if instance_id not in resource_ids:
+              problems.append("target Oracle instance is missing from resources")
+
+          print(json.dumps({
+              "name": d.get("display-name"),
+              "state": d.get("lifecycle-state"),
+              "cron": d.get("recurrence-details"),
+              "time_zone": d.get("local-time-zone"),
+              "last_run": d.get("time-last-run"),
+              "last_run_status": d.get("last-run-status"),
+              "next_run": d.get("time-next-run"),
+          }, indent=2))
+
+          if problems:
+              raise SystemExit("Invalid OCI wake schedule: " + "; ".join(problems))
+          PY
+            rm -f "$json_file"
+          }
+
           upsert_schedule() {
             local name="$1"
             local cron="$2"
-            local description="$3"
+            local expected_hour="$3"
+            local expected_minute="$4"
+            local description="$5"
             local existing_json schedule_id state
 
             existing_json="$(oci resource-scheduler schedule list \
@@ -94,18 +173,20 @@ jobs:
           payload = json.load(sys.stdin).get("data", [])
           if isinstance(payload, dict):
               payload = payload.get("items", [])
-          print(payload[0].get("id", "") if payload else "")
+          active = [x for x in payload if x.get("lifecycle-state") == "ACTIVE"]
+          chosen = active[0] if active else (payload[0] if payload else {})
+          print(chosen.get("id", ""))
           ' <<<"$existing_json")"
 
             if [[ -n "$schedule_id" && "$schedule_id" != "null" ]]; then
               echo "Found existing OCI schedule $name: $schedule_id"
               wait_until_settled "$schedule_id" >/dev/null
-              echo "Updating OCI Resource Scheduler schedule: $name"
               oci resource-scheduler schedule update \
                 --schedule-id "$schedule_id" \
                 --action START_RESOURCE \
                 --recurrence-type CRON \
                 --recurrence-details "$cron" \
+                --local-time-zone UTC \
                 --resources "$resources" \
                 --description "$description" \
                 --force \
@@ -113,13 +194,12 @@ jobs:
                 --max-wait-seconds 300 >/dev/null
             else
               echo "Creating OCI Resource Scheduler schedule: $name"
-              # Without a work-request waiter, create returns the schedule object and
-              # data.id is the actual schedule OCID (not a work-request OCID).
               schedule_id="$(oci resource-scheduler schedule create \
                 --action START_RESOURCE \
                 --compartment-id "$compartment_id" \
                 --recurrence-type CRON \
                 --recurrence-details "$cron" \
+                --local-time-zone UTC \
                 --display-name "$name" \
                 --description "$description" \
                 --resources "$resources" \
@@ -129,43 +209,37 @@ jobs:
 
             state="$(wait_until_settled "$schedule_id")"
             if [[ "$state" != "ACTIVE" ]]; then
-              echo "Activating OCI schedule $name (current state: $state)"
               oci resource-scheduler schedule activate \
                 --schedule-id "$schedule_id" \
                 --wait-for-state ACTIVE \
                 --max-wait-seconds 300 >/dev/null
             fi
 
-            state="$(schedule_state "$schedule_id")"
-            if [[ "$state" != "ACTIVE" ]]; then
-              echo "OCI schedule $name is not ACTIVE after provisioning: $state" >&2
-              exit 1
-            fi
-
-            oci resource-scheduler schedule get \
-              --schedule-id "$schedule_id" \
-              --query 'data.{name:"display-name",state:"lifecycle-state",action:action,recurrence:"recurrence-details",next:"time-next-execution"}' \
-              --output table
+            validate_schedule "$schedule_id" "$name" "$cron" "$expected_hour" "$expected_minute"
           }
 
-          # Resource Scheduler cron is UTC. 03:00 UTC = 08:30 IST; 03:20 UTC = 08:50 IST.
-          # The first wake is primary. The second is an independent guard before the 09:05 watcher.
+          # 03:00 UTC = 08:30 IST; 03:20 UTC = 08:50 IST.
           upsert_schedule \
             "GrowingTrader-Weekday-Wake-0830-IST" \
-            "0 3 * * 1-5" \
+            "0 3 * * mon-fri" \
+            "3" \
+            "0" \
             "Primary weekday wake for the shared Oracle VM before Growing Trader market observation."
 
           upsert_schedule \
             "GrowingTrader-Weekday-Wake-0850-IST" \
-            "20 3 * * 1-5" \
+            "20 3 * * mon-fri" \
+            "3" \
+            "20" \
             "Guard weekday wake for the shared Oracle VM before the 09:05 IST Growing Trader watcher."
 
       - name: Summary
         run: |
           {
-            echo '### OCI-native market wake provisioned'
+            echo '### OCI-native market wake verified'
             echo '- Primary wake: 08:30 IST weekdays (03:00 UTC)'
             echo '- Guard wake: 08:50 IST weekdays (03:20 UTC)'
-            echo '- GitHub Oracle Market Start remains a fallback, not the primary market clock.'
-            echo '- No STOP_RESOURCE schedule is created; conditional shared-VM shutdown remains managed separately.'
+            echo '- Each schedule must be ACTIVE, target the configured Oracle instance, and expose a real next run at the expected UTC time.'
+            echo '- The separate OCI Market Wake IAM workflow keeps the two schedule principals authorized for instance power actions.'
+            echo '- GitHub Oracle Market Start remains fallback only.'
           } >> "$GITHUB_STEP_SUMMARY"
