@@ -1,0 +1,100 @@
+name: Diagnose OCI Market Wake Failures
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/oracle-wake-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Install OCI CLI
+        run: python -m pip install --disable-pip-version-check oci-cli
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_API_PRIVATE_KEY" > ~/.oci/api_key.pem
+          chmod 600 ~/.oci/api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=${HOME}/.oci/api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+
+      - name: Print failed scheduled wake work requests
+        env:
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          set -euo pipefail
+          compartment_id="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."compartment-id"' --raw-output)"
+
+          for name in GrowingTrader-Weekday-Wake-0830-IST GrowingTrader-Weekday-Wake-0850-IST; do
+            oci resource-scheduler schedule list \
+              --compartment-id "$compartment_id" \
+              --display-name "$name" \
+              --all \
+              --output json > /tmp/schedules.json
+            sid="$(python - /tmp/schedules.json <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1])).get('data', [])
+          if isinstance(data, dict):
+              data = data.get('items', [])
+          print(data[0].get('id', '') if data else '')
+          PY
+            )"
+            if [[ -z "$sid" ]]; then
+              echo "Could not resolve schedule $name" >&2
+              exit 1
+            fi
+
+            echo "=== $name schedule ==="
+            oci resource-scheduler schedule get --schedule-id "$sid" \
+              --query 'data.{id:id,lastRun:"time-last-run",lastStatus:"last-run-status",nextRun:"time-next-run"}' \
+              --output json
+
+            oci resource-scheduler work-request list \
+              --compartment-id "$compartment_id" \
+              --schedule-id "$sid" \
+              --status FAILED \
+              --limit 5 \
+              --sort-by timeAccepted \
+              --sort-order DESC \
+              --output json > /tmp/failed.json
+            echo "=== Failed work requests ==="
+            cat /tmp/failed.json
+
+            python - /tmp/failed.json <<'PY' > /tmp/ids
+          import json, sys
+          data = json.load(open(sys.argv[1])).get('data', [])
+          if isinstance(data, dict):
+              data = data.get('items', [])
+          for item in data:
+              if item.get('id'):
+                  print(item['id'])
+          PY
+            while IFS= read -r wr; do
+              [[ -n "$wr" ]] || continue
+              echo "=== ERRORS $wr ==="
+              oci resource-scheduler work-request-error list --work-request-id "$wr" --all --output json || true
+              echo "=== LOGS $wr ==="
+              oci resource-scheduler work-request-log-entry list-work-request-logs --work-request-id "$wr" --all --output json || true
+            done < /tmp/ids
+          done
