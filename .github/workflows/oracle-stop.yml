@@ -1,9 +1,6 @@
 name: Oracle Market Stop
 
 on:
-  schedule:
-    - cron: "40 15 * * 1-5"
-      timezone: "Asia/Kolkata"
   workflow_dispatch:
 
 permissions:
@@ -22,6 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse while trader is paused
+        run: |
+          if [[ -f .trader-paused ]]; then
+            echo "Growing Trader is paused; trader shutdown workflow is disabled so it cannot interfere with Colab."
+            exit 1
+          fi
+
       - name: Check shutdown cutoff
         id: cutoff
         shell: bash
