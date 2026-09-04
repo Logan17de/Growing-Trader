@@ -1,0 +1,159 @@
+name: Pause Growing Trader
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".trader-paused"
+      - ".github/workflows/trader-pause.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-lifecycle
+  cancel-in-progress: false
+
+env:
+  ORACLE_HOST: ${{ vars.ORACLE_HOST || '193.123.166.128' }}
+  ORACLE_USER: ${{ vars.ORACLE_USER || 'ubuntu' }}
+
+jobs:
+  pause:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require pause marker
+        run: test -f .trader-paused
+
+      - name: Install OCI CLI
+        run: python -m pip install --disable-pip-version-check oci-cli
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_API_PRIVATE_KEY" > ~/.oci/api_key.pem
+          chmod 600 ~/.oci/api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=${HOME}/.oci/api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+
+      - name: Disable trader-specific OCI market wakes
+        env:
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          set -euo pipefail
+          compartment_id="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."compartment-id"' --raw-output)"
+          for name in GrowingTrader-Weekday-Wake-0830-IST GrowingTrader-Weekday-Wake-0850-IST; do
+            oci resource-scheduler schedule list \
+              --compartment-id "$compartment_id" \
+              --display-name "$name" \
+              --all \
+              --output json > /tmp/schedules.json
+            python - /tmp/schedules.json <<'PY' > /tmp/schedule_ids
+          import json, sys
+          data = json.load(open(sys.argv[1])).get('data', [])
+          if isinstance(data, dict):
+              data = data.get('items', [])
+          for item in data:
+              if item.get('id') and item.get('lifecycle-state') != 'DELETED':
+                  print(item['id'])
+          PY
+            while IFS= read -r sid; do
+              [[ -n "$sid" ]] || continue
+              state="$(oci resource-scheduler schedule get --schedule-id "$sid" --query 'data."lifecycle-state"' --raw-output)"
+              if [[ "$state" == "ACTIVE" ]]; then
+                echo "Deactivating $name ($sid)"
+                oci resource-scheduler schedule deactivate \
+                  --schedule-id "$sid" \
+                  --wait-for-state INACTIVE \
+                  --max-wait-seconds 300 >/dev/null
+              fi
+              final="$(oci resource-scheduler schedule get --schedule-id "$sid" --query 'data."lifecycle-state"' --raw-output)"
+              [[ "$final" == "INACTIVE" ]] || { echo "$name is not INACTIVE: $final" >&2; exit 1; }
+              echo "$name is INACTIVE"
+            done < /tmp/schedule_ids
+          done
+
+      - name: Check Oracle state
+        id: oracle
+        env:
+          OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
+        run: |
+          state="$(oci compute instance get --instance-id "$OCI_INSTANCE_OCID" --query 'data."lifecycle-state"' --raw-output)"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "Oracle state: $state"
+
+      - name: Configure Oracle SSH key
+        if: steps.oracle.outputs.state == 'RUNNING'
+        env:
+          ORACLE_SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$ORACLE_SSH_PRIVATE_KEY" > ~/.ssh/oracle
+          chmod 600 ~/.ssh/oracle
+
+      - name: Stop and mask trader services without stopping Oracle
+        if: steps.oracle.outputs.state == 'RUNNING'
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/oracle -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" '
+            set -euo pipefail
+            cd /home/ubuntu/Growing-Trader
+            git fetch origin main
+            git reset --hard origin/main
+
+            units=(
+              growing-trader-market-start.timer
+              growing-trader-market-start.service
+              growing-trader-preopen-auth.timer
+              growing-trader-preopen-auth.service
+              growing-trader.service
+            )
+            sudo systemctl stop "${units[@]}" >/dev/null 2>&1 || true
+            sudo systemctl disable "${units[@]}" >/dev/null 2>&1 || true
+            sudo systemctl mask "${units[@]}" >/dev/null 2>&1 || true
+            sudo systemctl daemon-reload
+
+            if [[ -f /home/ubuntu/api.env ]]; then
+              umask 077
+              tmp="$(mktemp /home/ubuntu/api.env.XXXXXX)"
+              grep -v -E "^(RESEND_API_KEY|TRADING_REPORT_TO|TRADING_REPORT_FROM)=" /home/ubuntu/api.env > "$tmp" || true
+              mv "$tmp" /home/ubuntu/api.env
+              chmod 600 /home/ubuntu/api.env
+            fi
+
+            for unit in "${units[@]}"; do
+              enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+              active="$(systemctl is-active "$unit" 2>/dev/null || true)"
+              echo "$unit enabled=$enabled active=$active"
+              [[ "$enabled" == "masked" ]] || { echo "$unit is not masked" >&2; exit 1; }
+            done
+          '
+
+      - name: Summary
+        run: |
+          {
+            echo '### Growing Trader paused'
+            echo '- Trader-specific OCI 08:30/08:50 market wake schedules are INACTIVE.'
+            echo '- Trader control/start/pre-open systemd units are stopped and masked when the VM is running.'
+            echo '- Trader mail credentials are removed from the Oracle trader environment.'
+            echo '- The shared Oracle VM was NOT stopped.'
+            echo '- Oracle Demand Wake and Colab/Qwen heartbeat/idle-stop flows are untouched.'
+          } >> "$GITHUB_STEP_SUMMARY"
