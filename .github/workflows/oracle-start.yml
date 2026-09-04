@@ -1,9 +1,6 @@
 name: Oracle Market Start
 
 on:
-  schedule:
-    - cron: "50 8 * * 1-5"
-      timezone: "Asia/Kolkata"
   workflow_dispatch:
 
 permissions:
@@ -23,6 +20,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
+      - name: Refuse while trader is paused
+        run: |
+          if [[ -f .trader-paused ]]; then
+            echo "Growing Trader is paused; market-start workflow is disabled."
+            exit 1
+          fi
 
       - name: Install PostgreSQL client
         run: |

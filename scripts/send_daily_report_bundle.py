@@ -12,6 +12,8 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+PAUSE_MARKER = Path(__file__).resolve().parents[1] / ".trader-paused"
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -69,6 +71,10 @@ def main() -> int:
     parser.add_argument("--input-dir", default="report-input")
     parser.add_argument("--output-dir", default="daily-report")
     args = parser.parse_args()
+
+    if PAUSE_MARKER.exists():
+        print("Growing Trader is paused; daily report email skipped.")
+        return 0
 
     key = os.environ.get("RESEND_API_KEY", "").strip()
     to = os.environ.get("TRADING_REPORT_TO", "").strip()

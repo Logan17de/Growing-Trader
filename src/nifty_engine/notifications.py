@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -10,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 REPORT_RECIPIENT = "loganlogesh17@gmail.com"
+PAUSE_MARKER = Path(__file__).resolve().parents[2] / ".trader-paused"
 
 
 def _mail_config() -> tuple[str, str, str] | None:
@@ -41,6 +43,9 @@ def _record_delivery(subject: str, sent: bool, detail: str) -> None:
 
 
 def _send(subject: str, html: str) -> dict[str, Any]:
+    if PAUSE_MARKER.exists():
+        return {"ok": True, "sent": False, "reason": "Growing Trader is paused"}
+
     config = _mail_config()
     if config is None:
         reason = "startup email configuration is incomplete"

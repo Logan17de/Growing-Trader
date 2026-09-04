@@ -10,6 +10,7 @@ RETRY_SERVICE_FILE="/etc/systemd/system/${RETRY_SERVICE_NAME}.service"
 RETRY_TIMER_NAME="${GT_RETRY_TIMER_NAME:-growing-trader-market-start.timer}"
 RETRY_TIMER_FILE="/etc/systemd/system/${RETRY_TIMER_NAME}"
 RUN_USER="${GT_RUN_USER:-ubuntu}"
+PAUSE_MARKER="${REPO_DIR}/.trader-paused"
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
   echo "Repository not found at $REPO_DIR" >&2
@@ -31,11 +32,45 @@ run_as_service_user() {
 run_as_service_user git -C "$REPO_DIR" fetch origin main
 run_as_service_user git -C "$REPO_DIR" reset --hard origin/main
 
+if [[ -f "$PAUSE_MARKER" ]]; then
+  echo "Growing Trader pause marker found; keeping trader services disabled."
+  units=(
+    "$RETRY_TIMER_NAME"
+    "$RETRY_SERVICE_NAME"
+    growing-trader-preopen-auth.timer
+    growing-trader-preopen-auth.service
+    "$SERVICE_NAME"
+  )
+  sudo systemctl stop "${units[@]}" >/dev/null 2>&1 || true
+  sudo systemctl disable "${units[@]}" >/dev/null 2>&1 || true
+  sudo systemctl mask "${units[@]}" >/dev/null 2>&1 || true
+  sudo systemctl daemon-reload
+
+  if [[ -f "$ENV_FILE" ]]; then
+    umask 077
+    tmp="$(mktemp "${ENV_FILE}.XXXXXX")"
+    grep -v -E '^(RESEND_API_KEY|TRADING_REPORT_TO|TRADING_REPORT_FROM)=' "$ENV_FILE" > "$tmp" || true
+    mv "$tmp" "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+  fi
+
+  for unit in "${units[@]}"; do
+    enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    active="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    echo "$unit enabled=$enabled active=$active"
+    [[ "$enabled" == "masked" ]] || { echo "$unit is not masked" >&2; exit 1; }
+  done
+  echo "Growing Trader remains paused. Shared Oracle/Colab services were not changed."
+  exit 0
+fi
+
 if [[ ! -x "$REPO_DIR/.venv/bin/python" ]]; then
   run_as_service_user python3 -m venv "$REPO_DIR/.venv"
 fi
 run_as_service_user "$REPO_DIR/.venv/bin/python" -m pip install --upgrade pip
 run_as_service_user "$REPO_DIR/.venv/bin/python" -m pip install -e "$REPO_DIR"
+
+sudo systemctl unmask "$SERVICE_NAME" "$RETRY_SERVICE_NAME" "$RETRY_TIMER_NAME" growing-trader-preopen-auth.service growing-trader-preopen-auth.timer >/dev/null 2>&1 || true
 
 sudo tee "$SERVICE_FILE" >/dev/null <<EOF
 [Unit]
