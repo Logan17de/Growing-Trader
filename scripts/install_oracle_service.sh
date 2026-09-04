@@ -43,7 +43,7 @@ if [[ -f "$PAUSE_MARKER" ]]; then
   )
   sudo systemctl stop "${units[@]}" >/dev/null 2>&1 || true
   sudo systemctl disable "${units[@]}" >/dev/null 2>&1 || true
-  sudo systemctl mask "${units[@]}" >/dev/null 2>&1 || true
+  sudo systemctl mask --runtime "${units[@]}" >/dev/null 2>&1 || true
   sudo systemctl daemon-reload
 
   if [[ -f "$ENV_FILE" ]]; then
@@ -58,7 +58,10 @@ if [[ -f "$PAUSE_MARKER" ]]; then
     enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
     active="$(systemctl is-active "$unit" 2>/dev/null || true)"
     echo "$unit enabled=$enabled active=$active"
-    [[ "$enabled" == "masked" ]] || { echo "$unit is not masked" >&2; exit 1; }
+    case "$enabled" in
+      masked|masked-runtime) ;;
+      *) echo "$unit is not runtime-masked" >&2; exit 1 ;;
+    esac
   done
   echo "Growing Trader remains paused. Shared Oracle/Colab services were not changed."
   exit 0
