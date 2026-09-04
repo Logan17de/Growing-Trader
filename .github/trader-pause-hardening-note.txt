@@ -1,1 +1,0 @@
-Pause hardening: while .trader-paused exists, normal deploys skip trader mail provisioning, the pre-open auth installer skips enabling its timer, and OCI-native trader market wake provisioning skips activation. Shared Oracle/Colab/Qwen flows remain untouched.
