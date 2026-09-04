@@ -23,6 +23,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check trader pause marker
+        id: pause
+        shell: bash
+        run: |
+          if [[ -f .trader-paused ]]; then
+            echo "paused=true" >> "$GITHUB_OUTPUT"
+            echo "Growing Trader is paused; deploy will preserve disabled services and skip mail provisioning."
+          else
+            echo "paused=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install PostgreSQL client
         run: |
           sudo apt-get update -qq
@@ -109,7 +120,7 @@ jobs:
           fi
 
       - name: Install startup email configuration on Oracle
-        if: steps.oracle.outputs.state == 'RUNNING' && steps.live.outputs.count == '0'
+        if: steps.oracle.outputs.state == 'RUNNING' && steps.live.outputs.count == '0' && steps.pause.outputs.paused != 'true'
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           TRADING_REPORT_FROM: ${{ secrets.TRADING_REPORT_FROM }}
