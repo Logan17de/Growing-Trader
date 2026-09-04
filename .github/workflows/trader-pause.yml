@@ -109,7 +109,7 @@ jobs:
           printf '%s\n' "$ORACLE_SSH_PRIVATE_KEY" > ~/.ssh/oracle
           chmod 600 ~/.ssh/oracle
 
-      - name: Stop and mask trader services without stopping Oracle
+      - name: Stop and disable trader services without stopping Oracle
         if: steps.oracle.outputs.state == 'RUNNING'
         run: |
           set -euo pipefail
@@ -126,28 +126,43 @@ jobs:
               growing-trader-preopen-auth.service
               growing-trader.service
             )
+            autostart_units=(
+              growing-trader-market-start.timer
+              growing-trader-preopen-auth.timer
+              growing-trader.service
+            )
+
             sudo systemctl stop "${units[@]}" >/dev/null 2>&1 || true
-            sudo systemctl disable "${units[@]}" >/dev/null 2>&1 || true
-            sudo systemctl mask --runtime "${units[@]}" >/dev/null 2>&1 || true
+            sudo systemctl disable "${autostart_units[@]}" >/dev/null 2>&1 || true
             sudo systemctl daemon-reload
 
             if [[ -f /home/ubuntu/api.env ]]; then
-              umask 077
-              tmp="$(mktemp /home/ubuntu/api.env.XXXXXX)"
-              grep -v -E "^(RESEND_API_KEY|TRADING_REPORT_TO|TRADING_REPORT_FROM)=" /home/ubuntu/api.env > "$tmp" || true
-              mv "$tmp" /home/ubuntu/api.env
-              chmod 600 /home/ubuntu/api.env
+              sudo sed -i -E "/^(RESEND_API_KEY|TRADING_REPORT_TO|TRADING_REPORT_FROM)=/d" /home/ubuntu/api.env
+              sudo chmod 600 /home/ubuntu/api.env
             fi
 
             for unit in "${units[@]}"; do
-              enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
               active="$(systemctl is-active "$unit" 2>/dev/null || true)"
-              echo "$unit enabled=$enabled active=$active"
-              case "$enabled" in
-                masked|masked-runtime) ;;
-                *) echo "$unit is not runtime-masked" >&2; exit 1 ;;
-              esac
+              echo "$unit active=$active"
+              [[ "$active" != "active" && "$active" != "activating" ]] || {
+                echo "$unit is still active" >&2
+                exit 1
+              }
             done
+
+            for unit in "${autostart_units[@]}"; do
+              enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+              echo "$unit enabled=$enabled"
+              [[ "$enabled" != "enabled" && "$enabled" != "enabled-runtime" ]] || {
+                echo "$unit is still enabled for automatic startup" >&2
+                exit 1
+              }
+            done
+
+            if sudo grep -q -E "^(RESEND_API_KEY|TRADING_REPORT_TO|TRADING_REPORT_FROM)=" /home/ubuntu/api.env; then
+              echo "Trader mail configuration still exists in /home/ubuntu/api.env" >&2
+              exit 1
+            fi
           '
 
       - name: Summary
@@ -155,7 +170,7 @@ jobs:
           {
             echo '### Growing Trader paused'
             echo '- Trader-specific OCI 08:30/08:50 market wake schedules are INACTIVE.'
-            echo '- Trader control/start/pre-open systemd units are persistently disabled and runtime-masked when the VM is running.'
+            echo '- Trader control/start/pre-open units are stopped; all trader autostart units are disabled.'
             echo '- Trader mail credentials are removed from the Oracle trader environment.'
             echo '- The shared Oracle VM was NOT stopped.'
             echo '- Oracle Demand Wake and Colab/Qwen heartbeat/idle-stop flows are untouched.'
