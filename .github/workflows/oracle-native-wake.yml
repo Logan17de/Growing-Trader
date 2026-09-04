@@ -18,10 +18,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Check trader pause marker
+        id: pause
+        shell: bash
+        run: |
+          if [[ -f .trader-paused ]]; then
+            echo "paused=true" >> "$GITHUB_OUTPUT"
+            echo "Growing Trader is paused; OCI-native market wakes will remain inactive."
+          else
+            echo "paused=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install OCI CLI
+        if: steps.pause.outputs.paused != 'true'
         run: python -m pip install --disable-pip-version-check oci-cli
 
       - name: Configure OCI authentication
+        if: steps.pause.outputs.paused != 'true'
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
           OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
@@ -44,6 +59,7 @@ jobs:
           chmod 600 ~/.oci/config
 
       - name: Create or update OCI-native wake schedules
+        if: steps.pause.outputs.paused != 'true'
         env:
           OCI_INSTANCE_OCID: ${{ secrets.OCI_INSTANCE_OCID }}
         run: |
@@ -86,7 +102,6 @@ jobs:
             local json_file
             json_file="$(mktemp)"
 
-            # OCI may populate time-next-run shortly after the work request settles.
             for attempt in $(seq 1 20); do
               oci resource-scheduler schedule get \
                 --schedule-id "$schedule_id" \
@@ -218,7 +233,6 @@ jobs:
             validate_schedule "$schedule_id" "$name" "$cron" "$expected_hour" "$expected_minute"
           }
 
-          # 03:00 UTC = 08:30 IST; 03:20 UTC = 08:50 IST.
           upsert_schedule \
             "GrowingTrader-Weekday-Wake-0830-IST" \
             "0 3 * * mon-fri" \
@@ -234,6 +248,7 @@ jobs:
             "Guard weekday wake for the shared Oracle VM before the 09:05 IST Growing Trader watcher."
 
       - name: Summary
+        if: steps.pause.outputs.paused != 'true'
         run: |
           {
             echo '### OCI-native market wake verified'
@@ -243,3 +258,7 @@ jobs:
             echo '- The separate OCI Market Wake IAM workflow keeps the two schedule principals authorized for instance power actions.'
             echo '- GitHub Oracle Market Start remains fallback only.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Paused summary
+        if: steps.pause.outputs.paused == 'true'
+        run: echo 'Growing Trader is paused; OCI-native market wake provisioning was skipped and existing market wakes remain inactive.' >> "$GITHUB_STEP_SUMMARY"
