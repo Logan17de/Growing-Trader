@@ -128,7 +128,7 @@ jobs:
             )
             sudo systemctl stop "${units[@]}" >/dev/null 2>&1 || true
             sudo systemctl disable "${units[@]}" >/dev/null 2>&1 || true
-            sudo systemctl mask "${units[@]}" >/dev/null 2>&1 || true
+            sudo systemctl mask --runtime "${units[@]}" >/dev/null 2>&1 || true
             sudo systemctl daemon-reload
 
             if [[ -f /home/ubuntu/api.env ]]; then
@@ -143,7 +143,10 @@ jobs:
               enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
               active="$(systemctl is-active "$unit" 2>/dev/null || true)"
               echo "$unit enabled=$enabled active=$active"
-              [[ "$enabled" == "masked" ]] || { echo "$unit is not masked" >&2; exit 1; }
+              case "$enabled" in
+                masked|masked-runtime) ;;
+                *) echo "$unit is not runtime-masked" >&2; exit 1 ;;
+              esac
             done
           '
 
@@ -152,7 +155,7 @@ jobs:
           {
             echo '### Growing Trader paused'
             echo '- Trader-specific OCI 08:30/08:50 market wake schedules are INACTIVE.'
-            echo '- Trader control/start/pre-open systemd units are stopped and masked when the VM is running.'
+            echo '- Trader control/start/pre-open systemd units are persistently disabled and runtime-masked when the VM is running.'
             echo '- Trader mail credentials are removed from the Oracle trader environment.'
             echo '- The shared Oracle VM was NOT stopped.'
             echo '- Oracle Demand Wake and Colab/Qwen heartbeat/idle-stop flows are untouched.'
