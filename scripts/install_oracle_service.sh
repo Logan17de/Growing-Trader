@@ -41,28 +41,44 @@ if [[ -f "$PAUSE_MARKER" ]]; then
     growing-trader-preopen-auth.service
     "$SERVICE_NAME"
   )
+  autostart_units=(
+    "$RETRY_TIMER_NAME"
+    growing-trader-preopen-auth.timer
+    "$SERVICE_NAME"
+  )
+
   sudo systemctl stop "${units[@]}" >/dev/null 2>&1 || true
-  sudo systemctl disable "${units[@]}" >/dev/null 2>&1 || true
-  sudo systemctl mask --runtime "${units[@]}" >/dev/null 2>&1 || true
+  sudo systemctl disable "${autostart_units[@]}" >/dev/null 2>&1 || true
   sudo systemctl daemon-reload
 
   if [[ -f "$ENV_FILE" ]]; then
-    umask 077
-    tmp="$(mktemp "${ENV_FILE}.XXXXXX")"
-    grep -v -E '^(RESEND_API_KEY|TRADING_REPORT_TO|TRADING_REPORT_FROM)=' "$ENV_FILE" > "$tmp" || true
-    mv "$tmp" "$ENV_FILE"
+    sed -i -E '/^(RESEND_API_KEY|TRADING_REPORT_TO|TRADING_REPORT_FROM)=/d' "$ENV_FILE"
     chmod 600 "$ENV_FILE"
   fi
 
   for unit in "${units[@]}"; do
-    enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
     active="$(systemctl is-active "$unit" 2>/dev/null || true)"
-    echo "$unit enabled=$enabled active=$active"
-    case "$enabled" in
-      masked|masked-runtime) ;;
-      *) echo "$unit is not runtime-masked" >&2; exit 1 ;;
-    esac
+    echo "$unit active=$active"
+    [[ "$active" != "active" && "$active" != "activating" ]] || {
+      echo "$unit is still active" >&2
+      exit 1
+    }
   done
+
+  for unit in "${autostart_units[@]}"; do
+    enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    echo "$unit enabled=$enabled"
+    [[ "$enabled" != "enabled" && "$enabled" != "enabled-runtime" ]] || {
+      echo "$unit is still enabled for automatic startup" >&2
+      exit 1
+    }
+  done
+
+  if grep -q -E '^(RESEND_API_KEY|TRADING_REPORT_TO|TRADING_REPORT_FROM)=' "$ENV_FILE"; then
+    echo "Trader mail configuration still exists in $ENV_FILE" >&2
+    exit 1
+  fi
+
   echo "Growing Trader remains paused. Shared Oracle/Colab services were not changed."
   exit 0
 fi
