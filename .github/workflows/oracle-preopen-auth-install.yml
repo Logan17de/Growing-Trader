@@ -23,7 +23,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Check trader pause marker
+        id: pause
+        shell: bash
+        run: |
+          if [[ -f .trader-paused ]]; then
+            echo "paused=true" >> "$GITHUB_OUTPUT"
+            echo "Growing Trader is paused; pre-open auth timer will remain disabled."
+          else
+            echo "paused=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure Oracle SSH key
+        if: steps.pause.outputs.paused != 'true'
         env:
           ORACLE_SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
         run: |
@@ -33,6 +47,7 @@ jobs:
           chmod 600 ~/.ssh/oracle
 
       - name: Wait for Oracle SSH
+        if: steps.pause.outputs.paused != 'true'
         run: |
           set -euo pipefail
           for attempt in $(seq 1 18); do
@@ -45,6 +60,7 @@ jobs:
           exit 1
 
       - name: Install and verify pre-open authorization timer
+        if: steps.pause.outputs.paused != 'true'
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new "$ORACLE_USER@$ORACLE_HOST" 'sudo tee /etc/systemd/system/growing-trader-preopen-auth.service >/dev/null <<"EOF"
@@ -95,6 +111,7 @@ jobs:
           sudo systemctl list-timers growing-trader-preopen-auth.timer --no-pager'
 
       - name: Summary
+        if: steps.pause.outputs.paused != 'true'
         run: |
           {
             echo '### Pre-open Groww authorization check verified'
@@ -103,3 +120,7 @@ jobs:
             echo '- It never starts trading or places orders.'
             echo '- On authorization failure it sends the existing Growing Trader waiting email before the 09:05 market watcher start.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Paused summary
+        if: steps.pause.outputs.paused == 'true'
+        run: echo 'Growing Trader is paused; pre-open authorization automation was not installed or enabled.' >> "$GITHUB_STEP_SUMMARY"
